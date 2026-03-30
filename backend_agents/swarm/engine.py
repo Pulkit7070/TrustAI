@@ -1,0 +1,300 @@
+"""
+TrustAI Swarm Engine — Prism-Inspired Self-Organizing Agent Swarm
+
+Architecture mirrors Paytm's Prism system:
+  1. PLANNER   — Decomposes the credit request into sub-tasks
+  2. EXECUTORS — Specialized agents execute sub-tasks concurrently
+  3. VALIDATOR — Cross-validates outputs, detects conflicts, produces final decision
+
+Agents communicate through a shared SwarmState (blackboard pattern).
+Every action is logged with nanosecond timestamps for latency tracking.
+"""
+
+import asyncio
+import time
+import uuid
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Optional
+
+
+class AgentRole(str, Enum):
+    PLANNER = "planner"
+    ANALYST = "analyst"
+    VERIFIER = "verifier"
+    DISBURSER = "disburser"
+    VALIDATOR = "validator"
+
+
+class StepStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+@dataclass
+class SwarmLog:
+    timestamp: float
+    agent: str
+    action: str
+    detail: str
+    latency_ms: float = 0.0
+
+    def to_dict(self):
+        return {
+            "timestamp": self.timestamp,
+            "agent": self.agent,
+            "action": self.action,
+            "detail": self.detail,
+            "latency_ms": round(self.latency_ms, 2),
+        }
+
+
+@dataclass
+class SwarmState:
+    """Shared blackboard for inter-agent communication."""
+
+    request_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+
+    # Input
+    merchant_id: str = ""
+    merchant_name: str = ""
+    transaction_data: dict = field(default_factory=dict)
+    loan_amount: float = 0.0
+    items: list = field(default_factory=list)
+    farmer_id: str = ""
+    farmer_name: str = ""
+
+    # Agent outputs
+    gnn_score: Optional[float] = None
+    gnn_confidence: Optional[float] = None
+    gnn_cluster_probs: Optional[dict] = None
+    tcn_stability: Optional[float] = None
+    tcn_trend: Optional[str] = None
+    fraud_flags: list = field(default_factory=list)
+    fraud_score: Optional[float] = None
+    price_verified: bool = False
+    price_details: dict = field(default_factory=dict)
+    payment_status: Optional[str] = None
+    payment_txn_id: Optional[str] = None
+    mcp_response: Optional[dict] = None
+
+    # Final decision
+    decision: Optional[str] = None  # "approved" | "rejected" | "structured"
+    decision_reason: str = ""
+    composite_risk: Optional[float] = None
+
+    # Execution log
+    logs: list = field(default_factory=list)
+    total_latency_ms: float = 0.0
+
+    def log(self, agent: str, action: str, detail: str, latency_ms: float = 0.0):
+        entry = SwarmLog(
+            timestamp=time.time(),
+            agent=agent,
+            action=action,
+            detail=detail,
+            latency_ms=latency_ms,
+        )
+        self.logs.append(entry)
+
+    def to_dict(self):
+        return {
+            "request_id": self.request_id,
+            "merchant_id": self.merchant_id,
+            "merchant_name": self.merchant_name,
+            "farmer_id": self.farmer_id,
+            "farmer_name": self.farmer_name,
+            "loan_amount": self.loan_amount,
+            "items": self.items,
+            "gnn_score": self.gnn_score,
+            "gnn_confidence": self.gnn_confidence,
+            "gnn_cluster_probs": self.gnn_cluster_probs,
+            "tcn_stability": self.tcn_stability,
+            "tcn_trend": self.tcn_trend,
+            "fraud_flags": self.fraud_flags,
+            "fraud_score": self.fraud_score,
+            "price_verified": self.price_verified,
+            "price_details": self.price_details,
+            "payment_status": self.payment_status,
+            "payment_txn_id": self.payment_txn_id,
+            "decision": self.decision,
+            "decision_reason": self.decision_reason,
+            "composite_risk": self.composite_risk,
+            "total_latency_ms": self.total_latency_ms,
+            "logs": [l.to_dict() for l in self.logs],
+        }
+
+
+@dataclass
+class SwarmResult:
+    success: bool
+    decision: str
+    state: dict
+    logs: list
+    total_latency_ms: float
+
+    def to_dict(self):
+        return {
+            "success": self.success,
+            "decision": self.decision,
+            "state": self.state,
+            "logs": self.logs,
+            "total_latency_ms": round(self.total_latency_ms, 2),
+        }
+
+
+class SwarmEngine:
+    """
+    Self-organizing swarm orchestrator.
+
+    Pipeline:
+      Plan → [Analyst + Verifier] (parallel) → Validator → Disburser (if approved)
+
+    This mirrors Prism's Planner→Generator→Validator architecture
+    but adapted for real-time credit decisioning.
+    """
+
+    def __init__(self, agents: dict):
+        """
+        agents: dict mapping AgentRole -> agent instance
+        Each agent must implement: async execute(state: SwarmState) -> SwarmState
+        """
+        self.agents = agents
+
+    async def run(self, state: SwarmState) -> SwarmResult:
+        swarm_start = time.time()
+        state.log("SWARM", "INIT", f"Swarm initialized for request {state.request_id}")
+
+        try:
+            # Phase 1: PLAN
+            state.log("PLANNER", "PLAN", "Decomposing credit request into sub-tasks")
+            plan = self._create_plan(state)
+            state.log(
+                "PLANNER",
+                "PLAN_COMPLETE",
+                f"Generated {len(plan)} execution steps",
+                latency_ms=(time.time() - swarm_start) * 1000,
+            )
+
+            # Phase 2: EXECUTE — Analyst + Verifier run in parallel
+            exec_start = time.time()
+            state.log("SWARM", "EXECUTE", "Launching Analyst and Verifier agents in parallel")
+
+            analyst = self.agents.get(AgentRole.ANALYST)
+            verifier = self.agents.get(AgentRole.VERIFIER)
+
+            if analyst and verifier:
+                # Parallel execution — this is the key differentiator
+                await asyncio.gather(
+                    analyst.execute(state),
+                    verifier.execute(state),
+                )
+            elif analyst:
+                await analyst.execute(state)
+
+            exec_latency = (time.time() - exec_start) * 1000
+            state.log("SWARM", "EXECUTE_COMPLETE", "Analyst and Verifier finished", latency_ms=exec_latency)
+
+            # Phase 3: VALIDATE — Cross-validate and produce final decision
+            val_start = time.time()
+            state = self._validate(state)
+            val_latency = (time.time() - val_start) * 1000
+            state.log("VALIDATOR", "VALIDATE_COMPLETE", f"Decision: {state.decision}", latency_ms=val_latency)
+
+            # Phase 4: DISBURSE — Only if approved
+            if state.decision == "approved" or state.decision == "structured":
+                disburser = self.agents.get(AgentRole.DISBURSER)
+                if disburser:
+                    await disburser.execute(state)
+
+            total_ms = (time.time() - swarm_start) * 1000
+            state.total_latency_ms = total_ms
+            state.log("SWARM", "COMPLETE", f"Swarm completed in {total_ms:.0f}ms", latency_ms=total_ms)
+
+            return SwarmResult(
+                success=True,
+                decision=state.decision or "pending",
+                state=state.to_dict(),
+                logs=[l.to_dict() for l in state.logs],
+                total_latency_ms=total_ms,
+            )
+
+        except Exception as e:
+            total_ms = (time.time() - swarm_start) * 1000
+            state.log("SWARM", "ERROR", str(e), latency_ms=total_ms)
+            return SwarmResult(
+                success=False,
+                decision="error",
+                state=state.to_dict(),
+                logs=[l.to_dict() for l in state.logs],
+                total_latency_ms=total_ms,
+            )
+
+    def _create_plan(self, state: SwarmState) -> list:
+        """Planner decomposes request into execution steps."""
+        steps = [
+            {"step": 1, "agent": "analyst", "task": "Run GNN credit mesh analysis on merchant transaction graph"},
+            {"step": 2, "agent": "analyst", "task": "Run TCN temporal stability scoring on 12-week financial data"},
+            {"step": 3, "agent": "verifier", "task": "Detect fraud patterns and circular transactions"},
+            {"step": 4, "agent": "verifier", "task": "Verify market prices for requested items"},
+            {"step": 5, "agent": "validator", "task": "Cross-validate GNN/TCN scores and compute composite risk"},
+            {"step": 6, "agent": "disburser", "task": "Execute payment via Paytm MCP if approved"},
+        ]
+        return steps
+
+    def _validate(self, state: SwarmState) -> SwarmState:
+        """
+        Validator agent — cross-validates outputs from Analyst and Verifier.
+        Computes composite risk score and makes final decision.
+
+        Decision matrix:
+          - composite_risk < 0.3  → approved (direct)
+          - composite_risk < 0.6  → structured (supply-based financing)
+          - composite_risk >= 0.6 → rejected
+          - Any critical fraud flags → rejected immediately
+        """
+        # Check for critical fraud
+        critical_frauds = [f for f in state.fraud_flags if f.get("severity") == "critical"]
+        if critical_frauds:
+            state.decision = "rejected"
+            state.decision_reason = f"Critical fraud detected: {critical_frauds[0].get('type', 'unknown')}"
+            state.composite_risk = 1.0
+            return state
+
+        # Compute composite risk from GNN + TCN + Fraud
+        gnn_risk = 1.0 - (state.gnn_confidence or 0.5)
+        tcn_risk = 1.0 - (state.tcn_stability or 0.5)
+        fraud_risk = state.fraud_score or 0.0
+
+        # Weighted composite: GNN 40%, TCN 35%, Fraud 25%
+        composite = (gnn_risk * 0.40) + (tcn_risk * 0.35) + (fraud_risk * 0.25)
+        state.composite_risk = round(composite, 4)
+
+        # Price verification penalty
+        if not state.price_verified and state.items:
+            composite += 0.05
+            state.composite_risk = round(min(composite, 1.0), 4)
+
+        # Decision
+        if composite < 0.3:
+            state.decision = "approved"
+            state.decision_reason = f"Low risk ({composite:.2f}). Strong relational stability and behavioral consistency."
+        elif composite < 0.6:
+            state.decision = "structured"
+            state.decision_reason = (
+                f"Moderate risk ({composite:.2f}). Recommending structured supply financing "
+                "to mitigate cash misuse risk while enabling productive investment."
+            )
+        else:
+            state.decision = "rejected"
+            state.decision_reason = f"High risk ({composite:.2f}). Insufficient trust signals across GNN and TCN models."
+
+        state.log(
+            "VALIDATOR",
+            "RISK_COMPUTED",
+            f"GNN={gnn_risk:.2f} TCN={tcn_risk:.2f} Fraud={fraud_risk:.2f} → Composite={composite:.2f} → {state.decision}",
+        )
+
+        return state

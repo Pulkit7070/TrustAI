@@ -1,0 +1,332 @@
+{
+  "nodes": [
+    {
+      "id": "user",
+      "label": "USER_CORE",
+      "cluster": "user"
+    },
+    {
+      "id": "income_gig",
+      "label": "GIG_PLATFORM",
+      "cluster": "income"
+    },
+    {
+      "id": "income_employer",
+      "label": "EMPLOYER_NODE",
+      "cluster": "income"
+    },
+    {
+      "id": "income_salary",
+      "label": "SALARY_SOURCE",
+      "cluster": "income"
+    },
+    {
+      "id": "income_freelance",
+      "label": "FREELANCE_CLIENT",
+      "cluster": "income"
+    },
+    {
+      "id": "income_recurring",
+      "label": "RECURRING_INCOME_SOURCE",
+      "cluster": "income"
+    },
+    {
+      "id": "obl_landlord",
+      "label": "LANDLORD_NODE",
+      "cluster": "obligation"
+    },
+    {
+      "id": "obl_utility",
+      "label": "UTILITY_PROVIDER",
+      "cluster": "obligation"
+    },
+    {
+      "id": "obl_emi",
+      "label": "EMI_PROVIDER",
+      "cluster": "obligation"
+    },
+    {
+      "id": "obl_insurance",
+      "label": "INSURANCE_PROVIDER",
+      "cluster": "obligation"
+    },
+    {
+      "id": "obl_subs",
+      "label": "SUBSCRIPTION_PROVIDER",
+      "cluster": "obligation"
+    },
+    {
+      "id": "spend_grocery",
+      "label": "GROCERY_MERCHANT",
+      "cluster": "spending"
+    },
+    {
+      "id": "spend_ecom",
+      "label": "E_COMMERCE",
+      "cluster": "spending"
+    },
+    {
+      "id": "spend_fuel",
+      "label": "FUEL_STATION",
+      "cluster": "spending"
+    },
+    {
+      "id": "spend_disc",
+      "label": "DISCRETIONARY_SPENDING",
+      "cluster": "spending"
+    },
+    {
+      "id": "spend_highvol",
+      "label": "HIGH_VOLATILITY_MERCHANT",
+      "cluster": "spending"
+    },
+    {
+      "id": "save_account",
+      "label": "SAVINGS_ACCOUNT",
+      "cluster": "savings"
+    },
+    {
+      "id": "save_rd",
+      "label": "RECURRING_DEPOSIT",
+      "cluster": "savings"
+    },
+    {
+      "id": "save_micro",
+      "label": "MICRO_INVESTMENT",
+      "cluster": "savings"
+    },
+    {
+      "id": "save_gold",
+      "label": "GOLD_SAVINGS",
+      "cluster": "savings"
+    },
+    {
+      "id": "save_emergency",
+      "label": "EMERGENCY_FUND",
+      "cluster": "savings"
+    },
+    {
+      "id": "peer_in",
+      "label": "P2P_TRANSFER_IN",
+      "cluster": "peer"
+    },
+    {
+      "id": "peer_out",
+      "label": "P2P_TRANSFER_OUT",
+      "cluster": "peer"
+    },
+    {
+      "id": "peer_family",
+      "label": "FAMILY_SUPPORT_NODE",
+      "cluster": "peer"
+    },
+    {
+      "id": "peer_loan_from",
+      "label": "LOAN_FROM_PEER",
+      "cluster": "peer"
+    },
+    {
+      "id": "peer_loan_to",
+      "label": "LOAN_TO_PEER",
+      "cluster": "peer"
+    }
+  ],
+  "edges": [
+    {
+      "source": "user",
+      "target": "income_gig"
+    },
+    {
+      "source": "user",
+      "target": "income_employer"
+    },
+    {
+      "source": "user",
+      "target": "income_salary"
+    },
+    {
+      "source": "user",
+      "target": "income_freelance"
+    },
+    {
+      "source": "user",
+      "target": "income_recurring"
+    },
+    {
+      "source": "user",
+      "target": "obl_landlord"
+    },
+    {
+      "source": "user",
+      "target": "obl_utility"
+    },
+    {
+      "source": "user",
+      "target": "obl_emi"
+    },
+    {
+      "source": "user",
+      "target": "obl_insurance"
+    },
+    {
+      "source": "user",
+      "target": "obl_subs"
+    },
+    {
+      "source": "user",
+      "target": "spend_grocery"
+    },
+    {
+      "source": "user",
+      "target": "spend_ecom"
+    },
+    {
+      "source": "user",
+      "target": "spend_fuel"
+    },
+    {
+      "source": "user",
+      "target": "spend_disc"
+    },
+    {
+      "source": "user",
+      "target": "spend_highvol"
+    },
+    {
+      "source": "user",
+      "target": "save_account"
+    },
+    {
+      "source": "user",
+      "target": "save_rd"
+    },
+    {
+      "source": "user",
+      "target": "save_micro"
+    },
+    {
+      "source": "user",
+      "target": "save_gold"
+    },
+    {
+      "source": "user",
+      "target": "save_emergency"
+    },
+    {
+      "source": "user",
+      "target": "peer_in"
+    },
+    {
+      "source": "user",
+      "target": "peer_out"
+    },
+    {
+      "source": "user",
+      "target": "peer_family"
+    },
+    {
+      "source": "user",
+      "target": "peer_loan_from"
+    },
+    {
+      "source": "user",
+      "target": "peer_loan_to"
+    },
+    {
+      "source": "income_gig",
+      "target": "income_employer"
+    },
+    {
+      "source": "income_employer",
+      "target": "income_salary"
+    },
+    {
+      "source": "income_salary",
+      "target": "income_freelance"
+    },
+    {
+      "source": "income_freelance",
+      "target": "income_recurring"
+    },
+    {
+      "source": "obl_landlord",
+      "target": "obl_utility"
+    },
+    {
+      "source": "obl_utility",
+      "target": "obl_emi"
+    },
+    {
+      "source": "obl_emi",
+      "target": "obl_insurance"
+    },
+    {
+      "source": "obl_insurance",
+      "target": "obl_subs"
+    },
+    {
+      "source": "spend_grocery",
+      "target": "spend_ecom"
+    },
+    {
+      "source": "spend_ecom",
+      "target": "spend_fuel"
+    },
+    {
+      "source": "spend_fuel",
+      "target": "spend_disc"
+    },
+    {
+      "source": "spend_disc",
+      "target": "spend_highvol"
+    },
+    {
+      "source": "save_account",
+      "target": "save_rd"
+    },
+    {
+      "source": "save_rd",
+      "target": "save_micro"
+    },
+    {
+      "source": "save_micro",
+      "target": "save_gold"
+    },
+    {
+      "source": "save_gold",
+      "target": "save_emergency"
+    },
+    {
+      "source": "peer_in",
+      "target": "peer_out"
+    },
+    {
+      "source": "peer_out",
+      "target": "peer_family"
+    },
+    {
+      "source": "peer_family",
+      "target": "peer_loan_from"
+    },
+    {
+      "source": "peer_loan_from",
+      "target": "peer_loan_to"
+    },
+    {
+      "source": "income_salary",
+      "target": "save_account"
+    },
+    {
+      "source": "income_salary",
+      "target": "spend_grocery"
+    },
+    {
+      "source": "spend_ecom",
+      "target": "peer_out"
+    },
+    {
+      "source": "obl_emi",
+      "target": "save_rd"
+    }
+  ]
+}
