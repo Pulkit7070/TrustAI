@@ -1,13 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Terminal, Play, CheckCircle, AlertCircle, Loader2, ArrowLeft } from 'lucide-react';
+import { API_BASE } from '../lib/api';
 
 export default function AgentSimulation({ onBack }) {
     const [config, setConfig] = useState({
-        item: "Urea Fertilizer",
+        item: "POS Terminal",
         quantity: 50,
         vendor_id: "V-9988",
-        farmer_id: "F-1024"
+        borrower_id: "B-1024"
     });
 
     const [loading, setLoading] = useState(false);
@@ -40,14 +41,14 @@ export default function AgentSimulation({ onBack }) {
         setTimeout(() => addLog("BROKER", `Contacting Vendor ${config.vendor_id}...`, "text-[var(--cyber-green)]"), 1500);
 
         try {
-            const response = await fetch('http://localhost:8000/run-agents', {
+            const response = await fetch(`${API_BASE}/run-agents`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     item: config.item,
                     quantity: Number(config.quantity),
                     vendor_id: config.vendor_id,
-                    farmer_id: config.farmer_id
+                    borrower_id: config.borrower_id
                 })
             });
 
@@ -57,7 +58,7 @@ export default function AgentSimulation({ onBack }) {
                 addLog("BROKER", "Price Verified. Purchase Order Generated.", "text-[var(--cyber-green)]");
                 addLog("ESCROW", "Purchase Order Received. Locking Funds...", "text-[var(--neon-purple)]");
                 setTimeout(() => addLog("ESCROW", `Transferring funds to ${config.vendor_id} (UPI)...`, "text-[var(--neon-purple)]"), 500);
-                setTimeout(() => addLog("RECOVERY", `Signal Received. Loan linked to Harvest ID.`, "text-[var(--deep-blue)]"), 1000);
+                setTimeout(() => addLog("RECOVERY", `Signal Received. Loan linked to Repayment ID.`, "text-[var(--deep-blue)]"), 1000);
                 setTimeout(() => {
                     addLog("SYSTEM", "Transaction Request Completed Successfully.", "text-green-500 font-bold");
                     setFinalResult(data.result);
@@ -105,9 +106,9 @@ export default function AgentSimulation({ onBack }) {
                                     onChange={(e) => setConfig({ ...config, item: e.target.value })}
                                     className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-2 focus:border-[var(--cyber-green)] outline-none text-white appearance-none"
                                 >
-                                    <option>Urea Fertilizer</option>
-                                    <option>DAP Fertilizer</option>
-                                    <option>Hybrid Seeds</option>
+                                    <option>POS Terminal</option>
+                                    <option>Barcode Scanner</option>
+                                    <option>Receipt Printer</option>
                                 </select>
                             </div>
 

@@ -1,398 +1,422 @@
-import { useState, useRef } from 'react';
-import { motion } from 'framer-motion';
-import { BrainCircuit, Search, CreditCard, ArrowRight, Zap, Shield, Globe } from 'lucide-react';
-import Antigravity from './components/Antigravity';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Navbar } from './components/Navbar';
-import MarketplaceDemo from './components/MarketplaceDemo';
-import TCNAgentVisualizer from './components/TCNAgentVisualizer';
-import CreditReliabilityMesh from './components/CreditMesh';
-import DecisionEngine from './components/DecisionEngine';
-import UserDashboard from './components/UserDashboard';
-import ShopkeeperDashboard from './components/ShopkeeperDashboard';
-import SwarmVisualizer from './components/SwarmVisualizer';
+import { API_BASE } from './lib/api';
 
-// i18n translations
+const VALID_VIEWS = new Set([
+  'home', 'apply', 'swarm', 'demo', 'dashboard', 'shopkeeper',
+  'compare', 'tcn', 'mesh', 'decision',
+]);
+
+function getViewFromPath() {
+  const path = window.location.pathname.replace(/^\//, '');
+  return VALID_VIEWS.has(path) ? path : 'home';
+}
+
+const MarketplaceDemo = lazy(() => import('./components/MarketplaceDemo'));
+const TCNAgentVisualizer = lazy(() => import('./components/TCNAgentVisualizer'));
+const CreditReliabilityMesh = lazy(() => import('./components/CreditMesh'));
+const DecisionEngine = lazy(() => import('./components/DecisionEngine'));
+const UserDashboard = lazy(() => import('./components/UserDashboard'));
+const ShopkeeperDashboard = lazy(() => import('./components/ShopkeeperDashboard'));
+const SwarmVisualizer = lazy(() => import('./components/SwarmVisualizer'));
+const ComparisonDashboard = lazy(() => import('./components/ComparisonDashboard'));
+const LoanApplication = lazy(() => import('./components/LoanApplication'));
+
 const translations = {
   en: {
-    heroTitle: 'TrustAI',
-    heroSub: 'Built on Paytm MCP',
-    heroDesc: 'AI agent swarm that turns merchant transaction patterns into trust scores — enabling instant credit decisions through Paytm\'s payment infrastructure.',
-    heroBtn: 'Launch Swarm',
-    heroBtn2: 'View Dashboard',
-    sectionTitle: 'The Agent Swarm',
-    sectionDesc: 'Prism-inspired self-organizing agents. Parallel execution. Sub-second decisions.',
-    analyst: 'Analyst Agent',
-    analystDesc: 'Runs GNN credit mesh + TCN temporal stability analysis on merchant transaction graphs in parallel.',
-    verifier: 'Verifier Agent',
-    verifierDesc: 'Detects fraud patterns, circular transactions, and verifies market prices against real mandi rates.',
-    disburser: 'Disburser Agent',
-    disburserDesc: 'Executes payments via Paytm MCP Server — directly to merchants, never to borrowers. UPI escrow pattern.',
-    termTitle: 'Live Swarm Execution',
-    footerText: 'TrustAI — Built on Paytm MCP Server & Prism Architecture',
-    footerSub: 'FIN-O-HACK 2026 | AI for Small Businesses Track',
-    poweredBy: 'Powered by',
+    heroDesc: '87% of India\'s 63M MSMEs can\'t access formal credit. TrustAI turns Paytm Soundbox and UPI transaction data into a real-time credit score — so partner banks can lend confidently through the DLG model.',
+    heroBtn: 'Run the Swarm',
+    heroBtn2: 'Borrower Dashboard',
   },
   hi: {
-    heroTitle: 'TrustAI',
-    heroSub: 'Paytm MCP पर निर्मित',
-    heroDesc: 'AI एजेंट स्वार्म जो व्यापारी लेनदेन पैटर्न को ट्रस्ट स्कोर में बदलता है — Paytm के भुगतान बुनियादी ढांचे के माध्यम से तत्काल क्रेडिट निर्णय।',
-    heroBtn: 'स्वार्म चालू करें',
-    heroBtn2: 'डैशबोर्ड देखें',
-    sectionTitle: 'एजेंट स्वार्म',
-    sectionDesc: 'Prism-प्रेरित स्व-संगठित एजेंट। समानांतर निष्पादन। सब-सेकंड निर्णय।',
-    analyst: 'विश्लेषक एजेंट',
-    analystDesc: 'व्यापारी लेनदेन ग्राफ पर GNN क्रेडिट मेश + TCN टेम्पोरल स्थिरता विश्लेषण समानांतर में चलाता है।',
-    verifier: 'सत्यापनकर्ता एजेंट',
-    verifierDesc: 'धोखाधड़ी पैटर्न, सर्कुलर लेनदेन का पता लगाता है और वास्तविक मंडी दरों के खिलाफ बाजार कीमतों की पुष्टि करता है।',
-    disburser: 'वितरक एजेंट',
-    disburserDesc: 'Paytm MCP सर्वर के माध्यम से भुगतान करता है — सीधे व्यापारियों को, कभी उधारकर्ताओं को नहीं। UPI एस्क्रो पैटर्न।',
-    termTitle: 'लाइव स्वार्म निष्पादन',
-    footerText: 'TrustAI — Paytm MCP सर्वर और Prism आर्किटेक्चर पर निर्मित',
-    footerSub: 'FIN-O-HACK 2026 | छोटे व्यवसायों के लिए AI ट्रैक',
-    poweredBy: 'द्वारा संचालित',
+    heroDesc: 'पारंपरिक क्रेडिट स्कोर के बिना भी, हम UPI लेनदेन डेटा से मर्चेंट को क्रेडिट दिलाते हैं — Paytm MCP के माध्यम से।',
+    heroBtn: 'स्वार्म चलाएं',
+    heroBtn2: 'उधारकर्ता डैशबोर्ड',
   },
 };
 
-// Animations
-const fadeInUp = {
-  hidden: { opacity: 0, y: 30 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.8, ease: "easeOut" } }
+const agentColor = (agent) => {
+  if (agent === 'ANALYST') return 'text-blue-400';
+  if (agent === 'VERIFIER') return 'text-amber-400';
+  if (agent === 'VALIDATOR') return 'text-emerald-400';
+  if (agent === 'DISBURSER' || agent === 'SWARM') return 'text-emerald-500';
+  if (agent === 'PLANNER') return 'text-violet-400';
+  return 'text-zinc-400';
 };
 
-const staggerContainer = {
-  hidden: { opacity: 0 },
-  visible: { opacity: 1, transition: { staggerChildren: 0.2 } }
-};
+const fallbackTerminal = [
+  { ts: '0', src: 'SWARM', msg: 'Initializing TrustAI agent swarm...' },
+  { ts: '1', src: 'PLANNER', msg: 'Decomposing credit request into 6 sub-tasks' },
+  { ts: '2', src: 'ANALYST', msg: 'Running GNN + TCN evaluation on merchant graph' },
+  { ts: '3', src: 'VERIFIER', msg: 'Checking fraud signals and market-aligned item prices' },
+  { ts: '4', src: 'VALIDATOR', msg: 'Composite risk computed — decision: structured' },
+  { ts: '5', src: 'DISBURSER', msg: 'Paytm MCP payment sent to merchant via UPI Escrow' },
+];
 
 export default function App() {
-  const [currentView, setCurrentView] = useState('home');
-  const [loanStatus, setLoanStatus] = useState('rejected');
+  const [currentView, setCurrentView] = useState(getViewFromPath);
+  const [loanStatus, setLoanStatus] = useState('none');
   const [structuredRequest, setStructuredRequest] = useState(null);
   const [lang, setLang] = useState('en');
+  const [terminalLines, setTerminalLines] = useState(fallbackTerminal);
+  const [terminalLoading, setTerminalLoading] = useState(false);
+  const [terminalRan, setTerminalRan] = useState(false);
   const terminalRef = useRef(null);
-
   const t = translations[lang];
 
-  const handleLoanApplication = (amount) => {
-    setLoanStatus('review');
-    setTimeout(() => setLoanStatus('rejected'), 2500);
+  const navigateTo = useCallback((view) => {
+    const v = VALID_VIEWS.has(view) ? view : 'home';
+    setCurrentView(v);
+    window.history.pushState(null, '', v === 'home' ? '/' : `/${v}`);
+  }, []);
+
+  // Sync view when browser back/forward buttons are used
+  useEffect(() => {
+    const onPopState = () => setCurrentView(getViewFromPath());
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  useEffect(() => {
+    terminalRef.current?.scrollTo({ top: terminalRef.current.scrollHeight, behavior: 'smooth' });
+  }, [terminalLines]);
+
+  const runTerminalDemo = async () => {
+    setTerminalLoading(true);
+    setTerminalLines([{ ts: '0', src: 'SWARM', msg: 'Connecting to backend...' }]);
+    try {
+      const profilesRes = await fetch(`${API_BASE}/swarm/profiles`);
+      const profiles = await profilesRes.json();
+      const profile = profiles?.profiles?.find((p) => p.id === 'structured') || profiles?.profiles?.[0];
+      if (!profile) throw new Error('No profiles');
+      const detailRes = await fetch(`${API_BASE}/swarm/profiles/${profile.id}`);
+      const detail = await detailRes.json();
+      const runRes = await fetch(`${API_BASE}/swarm/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          merchant_id: detail.merchant_id, merchant_name: detail.merchant_name,
+          borrower_id: detail.borrower_id || detail.farmer_id,
+          borrower_name: detail.borrower_name || detail.farmer_name,
+          loan_amount: detail.loan_amount, items: detail.items,
+          transaction_data: detail.transaction_data,
+        }),
+      });
+      const run = await runRes.json();
+      const lines = (run.logs || []).slice(-12).map((log) => ({
+        ts: String(Math.round(log.latency_ms || 0)), src: log.agent, msg: log.detail,
+      }));
+      setTerminalLines(lines.length ? lines : fallbackTerminal);
+      setTerminalRan(true);
+    } catch {
+      setTerminalLines([...fallbackTerminal, { ts: '--', src: 'NOTE', msg: 'Backend offline — showing sample output' }]);
+    }
+    setTerminalLoading(false);
   };
 
-  const toggleLang = () => setLang(l => l === 'en' ? 'hi' : 'en');
+  const toggleLang = () => setLang((v) => v === 'en' ? 'hi' : 'en');
+  const handleLoanApplication = (payload) => {
+    setStructuredRequest(null);
+    setLoanStatus(payload?.decision === 'approved' ? 'approved' : 'rejected');
+  };
 
   return (
-    <div className="relative min-h-screen w-full overflow-x-hidden text-white font-sans selection:bg-[var(--cyber-green)] selection:text-black">
+    <div className="min-h-screen w-full overflow-x-hidden text-white bg-zinc-950">
+      <Navbar onNavigate={navigateTo} lang={lang} onToggleLang={toggleLang} />
 
-      {/* Global Background */}
-      <div className="fixed inset-0 z-0 bg-black">
-        <Antigravity
-          count={300}
-          magnetRadius={6}
-          ringRadius={7}
-          waveSpeed={0.4}
-          waveAmplitude={1}
-          particleSize={1.5}
-          lerpSpeed={0.05}
-          color="#00ff4c"
-          autoAnimate
-          particleVariance={1}
-          rotationSpeed={0}
-          depthFactor={1}
-          pulseSpeed={3}
-          particleShape="capsule"
-          fieldStrength={10}
-        />
-      </div>
-
-      {/* Navbar */}
-      <div className="relative z-50">
-        <Navbar onNavigate={setCurrentView} lang={lang} onToggleLang={toggleLang} />
-      </div>
-
-      {/* Main Content */}
-      <div className="relative z-10">
-        {currentView === 'swarm' ? (
-          <SwarmVisualizer onBack={() => setCurrentView('home')} />
-        ) : currentView === 'demo' ? (
-          <MarketplaceDemo onBack={() => setCurrentView('home')} />
-        ) : currentView === 'dashboard' ? (
-          <UserDashboard
-            onBack={() => setCurrentView('home')}
-            loanStatus={loanStatus}
-            onApplyLoan={handleLoanApplication}
-            onNavigateTo={setCurrentView}
-            setStructuredRequest={setStructuredRequest}
-          />
-        ) : currentView === 'shopkeeper' ? (
-          <ShopkeeperDashboard
-            onBack={() => setCurrentView('dashboard')}
-            requestData={structuredRequest}
-            onDecision={(decision) => setLoanStatus(decision === 'approved' ? 'structured_approved' : 'structured_rejected')}
-          />
-        ) : currentView === 'tcn' ? (
-          <TCNAgentVisualizer onBack={() => setCurrentView('home')} />
-        ) : currentView === 'mesh' ? (
-          <CreditReliabilityMesh onBack={() => setCurrentView('home')} />
-        ) : currentView === 'decision' ? (
-          <DecisionEngine
-            onBack={() => setCurrentView('home')}
-            onSanction={(decision) => {
-              setLoanStatus(decision);
-              if (decision === 'rejected') setCurrentView('dashboard');
-            }}
-          />
-        ) : (
-          <>
-            {/* ===== LANDING PAGE ===== */}
-
-            {/* Hero Section */}
-            <div className="relative w-full min-h-screen flex flex-col justify-center px-4 max-w-5xl mx-auto">
-              <div className="relative z-10 pt-32 sm:pt-40 md:pt-48">
-                {/* Paytm MCP Badge */}
-                <motion.div
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.2 }}
-                  className="inline-flex items-center gap-2 bg-white/5 border border-white/10 rounded-full px-4 py-1.5 mb-6"
-                >
-                  <div className="w-2 h-2 rounded-full bg-[var(--cyber-green)] animate-pulse" />
-                  <span className="text-xs text-gray-400">{t.heroSub}</span>
-                  <span className="text-[10px] text-gray-600">|</span>
-                  <span className="text-[10px] text-gray-500">FIN-O-HACK 2026</span>
-                </motion.div>
-
-                <motion.h1
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.3 }}
-                  className="text-5xl sm:text-7xl md:text-8xl font-bold mb-6 leading-tight tracking-tight"
-                >
-                  {t.heroTitle}
-                </motion.h1>
-
-                <motion.p
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.5 }}
-                  className="text-lg sm:text-xl md:text-2xl mb-8 opacity-90 max-w-2xl text-gray-200 leading-relaxed"
-                >
-                  {t.heroDesc}
-                </motion.p>
-
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.7 }}
-                  className="flex flex-col sm:flex-row items-start gap-3"
-                >
-                  <button
-                    onClick={() => setCurrentView('swarm')}
-                    className="bg-[var(--cyber-green)] hover:bg-[#00cc7d] text-black font-bold py-3 sm:py-4 px-8 rounded-full transition duration-300 shadow-[0_0_20px_rgba(0,255,157,0.3)] hover:scale-105 flex items-center gap-2"
-                  >
-                    <Zap className="w-5 h-5" />
-                    {t.heroBtn}
-                  </button>
-                  <button
-                    onClick={() => setCurrentView('dashboard')}
-                    className="bg-white/10 border border-white/20 hover:bg-white/20 text-white font-medium py-3 sm:py-4 px-8 rounded-full transition duration-300 backdrop-blur-md flex items-center gap-2"
-                  >
-                    {t.heroBtn2}
-                    <ArrowRight className="w-4 h-4" />
-                  </button>
-                </motion.div>
-
-                {/* Tech Stack Pills */}
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ delay: 1 }}
-                  className="mt-12 flex flex-wrap gap-2"
-                >
-                  {['Paytm MCP Server', 'Prism Architecture', 'GNN', 'TCN', 'FastAPI', 'React'].map(tech => (
-                    <span key={tech} className="text-[10px] text-gray-500 bg-white/5 border border-white/5 px-3 py-1 rounded-full">
-                      {tech}
-                    </span>
-                  ))}
-                </motion.div>
-              </div>
-            </div>
-
-            {/* Main Content */}
-            <main className="relative z-10 flex flex-col items-center w-full px-4 md:px-8 max-w-7xl mx-auto space-y-32 pb-24 bg-black/60 backdrop-blur-xl rounded-t-3xl border-t border-white/10 pt-24 mt-[-10vh]">
-
-              {/* Agent Swarm Section */}
-              <section className="w-full" id="solution">
-                <motion.div
-                  className="text-center mb-16"
-                  initial={{ opacity: 0, y: 20 }}
-                  whileInView={{ opacity: 1, y: 0 }}
-                  viewport={{ once: true }}
-                >
-                  <h2 className="text-3xl md:text-4xl font-bold mb-4">{t.sectionTitle}</h2>
-                  <p className="text-gray-300 text-lg">{t.sectionDesc}</p>
-                </motion.div>
-
-                <motion.div
-                  className="grid grid-cols-1 md:grid-cols-3 gap-6"
-                  initial="hidden"
-                  whileInView="visible"
-                  viewport={{ once: true, margin: "-100px" }}
-                  variants={staggerContainer}
-                >
-                  <GlassCard
-                    icon={<BrainCircuit className="w-8 h-8 text-blue-400" />}
-                    title={t.analyst}
-                    description={t.analystDesc}
-                    tag="GNN + TCN"
-                    tagColor="text-blue-400 bg-blue-500/10"
-                  />
-                  <GlassCard
-                    icon={<Search className="w-8 h-8 text-yellow-400" />}
-                    title={t.verifier}
-                    description={t.verifierDesc}
-                    tag="Fraud Detection"
-                    tagColor="text-yellow-400 bg-yellow-500/10"
-                  />
-                  <GlassCard
-                    icon={<CreditCard className="w-8 h-8 text-[var(--cyber-green)]" />}
-                    title={t.disburser}
-                    description={t.disburserDesc}
-                    tag="Paytm MCP"
-                    tagColor="text-[var(--cyber-green)] bg-[var(--cyber-green)]/10"
-                  />
-                </motion.div>
-
-                {/* Pipeline Diagram */}
-                <motion.div
-                  className="mt-12 p-6 rounded-2xl bg-white/5 border border-white/10 max-w-3xl mx-auto"
-                  initial={{ opacity: 0 }}
-                  whileInView={{ opacity: 1 }}
-                  viewport={{ once: true }}
-                >
-                  <div className="text-center text-xs text-gray-500 uppercase tracking-widest mb-4">Execution Pipeline</div>
-                  <div className="flex items-center justify-center gap-2 flex-wrap">
-                    <PipelineStep label="PLAN" color="#8b5cf6" />
-                    <ArrowRight className="w-4 h-4 text-gray-600 shrink-0" />
-                    <div className="flex items-center gap-1 border border-dashed border-yellow-400/30 rounded-lg p-2">
-                      <PipelineStep label="ANALYZE" color="#3b82f6" />
-                      <span className="text-yellow-400 text-[10px] font-bold mx-1">||</span>
-                      <PipelineStep label="VERIFY" color="#f59e0b" />
-                    </div>
-                    <ArrowRight className="w-4 h-4 text-gray-600 shrink-0" />
-                    <PipelineStep label="VALIDATE" color="#10b981" />
-                    <ArrowRight className="w-4 h-4 text-gray-600 shrink-0" />
-                    <PipelineStep label="DISBURSE" color="#00ff9d" />
-                  </div>
-                  <div className="text-center text-[10px] text-gray-600 mt-3">Parallel execution for sub-second latency</div>
-                </motion.div>
-              </section>
-
-              {/* Terminal / Live Activity */}
-              <section className="w-full max-w-4xl mx-auto pb-24" id="features">
-                <motion.div
-                  className="text-center mb-12"
-                  initial={{ opacity: 0 }}
-                  whileInView={{ opacity: 1 }}
-                  viewport={{ once: true }}
-                >
-                  <h2 className="text-3xl font-bold">{t.termTitle}</h2>
-                </motion.div>
-
-                <motion.div
-                  className="w-full rounded-xl overflow-hidden border border-white/10 shadow-2xl bg-black/80"
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  whileInView={{ opacity: 1, scale: 1 }}
-                  viewport={{ once: true }}
-                  transition={{ duration: 0.6 }}
-                >
-                  {/* Terminal Header */}
-                  <div className="flex items-center px-4 py-2 bg-white/5 border-b border-white/10 gap-2">
-                    <div className="w-3 h-3 rounded-full bg-red-500/80" />
-                    <div className="w-3 h-3 rounded-full bg-yellow-500/80" />
-                    <div className="w-3 h-3 rounded-full bg-green-500/80" />
-                    <div className="ml-4 text-xs font-mono text-white/40">trustai-swarm — v2.0.0</div>
-                    <div className="ml-auto flex items-center gap-2">
-                      <span className="text-[10px] text-[var(--cyber-green)] bg-[var(--cyber-green)]/10 px-2 py-0.5 rounded font-mono">MCP:paytm</span>
-                    </div>
-                  </div>
-
-                  {/* Terminal Content */}
-                  <div className="p-6 font-mono text-sm space-y-3 text-left h-96 overflow-y-auto custom-scrollbar" ref={terminalRef}>
-                    <TerminalLine ts="00:00" src="SWARM" msg="Initializing TrustAI agent swarm..." c="text-[var(--cyber-green)]" />
-                    <TerminalLine ts="00:12" src="PLANNER" msg="Decomposing credit request → 6 sub-tasks generated" c="text-purple-400" />
-                    <TerminalLine ts="00:15" src="SWARM" msg="Launching ANALYST and VERIFIER in parallel..." c="text-[var(--cyber-green)]" />
-                    <TerminalLine ts="00:18" src="ANALYST" msg="GNN forward pass on merchant graph (21 nodes, 6 clusters)..." c="text-blue-400" />
-                    <TerminalLine ts="00:45" src="ANALYST" msg="GNN confidence: 0.7823 | Cluster: revenue (strong)" c="text-blue-400" />
-                    <TerminalLine ts="00:52" src="ANALYST" msg="TCN stability score: 0.6842 | Trend: improving" c="text-blue-400" />
-                    <TerminalLine ts="00:38" src="VERIFIER" msg="Fraud check — 0 critical flags, score: 0.05" c="text-yellow-400" />
-                    <TerminalLine ts="00:56" src="VERIFIER" msg="Price verified: Wheat Seeds ₹1200 (market ₹1200 ✓), Urea ₹850 (market ₹850 ✓)" c="text-yellow-400" />
-                    <TerminalLine ts="01:02" src="VALIDATOR" msg="GNN=0.22 TCN=0.32 Fraud=0.05 → Composite=0.2305" c="text-green-400" />
-                    <TerminalLine ts="01:05" src="VALIDATOR" msg="Decision: STRUCTURED FINANCING (moderate risk, supply-based)" c="text-green-400" />
-                    <TerminalLine ts="01:08" src="DISBURSER" msg="[MCP] paytm_initiate_transaction → ₹6,650 to KSK-901" c="text-[var(--cyber-green)]" />
-                    <TerminalLine ts="01:28" src="DISBURSER" msg="[MCP] TXN_SUCCESS: PTM-A1B2C3D4E5F6 | UPI_ESCROW" c="text-[var(--cyber-green)]" />
-                    <TerminalLine ts="01:30" src="DISBURSER" msg="[MCP] paytm_create_subscription → Auto-deduction on harvest" c="text-[var(--cyber-green)]" />
-                    <TerminalLine ts="01:42" src="SWARM" msg="Pipeline complete in 342ms | 3 agents | 4 MCP calls" c="text-white" />
-                    <div className="animate-pulse text-[var(--cyber-green)] mt-4">_</div>
-                  </div>
-                </motion.div>
-              </section>
-
-            </main>
-
-            {/* Footer */}
-            <footer className="relative z-10 w-full py-8 text-center border-t border-white/5 bg-black/20 backdrop-blur-sm">
-              <p className="text-white/30 text-sm mb-1">{t.footerText}</p>
-              <p className="text-white/20 text-xs">{t.footerSub}</p>
-            </footer>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// Sub-components
-
-function GlassCard({ icon, title, description, tag, tagColor }) {
-  return (
-    <motion.div
-      variants={fadeInUp}
-      className="glass-card flex flex-col items-start text-left group overflow-hidden relative"
-    >
-      <div className="flex items-center justify-between w-full mb-4">
-        <div className="p-3 rounded-lg bg-white/5 group-hover:bg-white/10 transition-colors">
-          {icon}
+      <Suspense fallback={
+        <div className="min-h-screen flex items-center justify-center">
+          <div className="w-5 h-5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
         </div>
-        {tag && (
-          <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full ${tagColor}`}>
-            {tag}
-          </span>
-        )}
-      </div>
-      <h3 className="text-xl font-bold mb-2 group-hover:text-[var(--cyber-green)] transition-colors text-white">{title}</h3>
-      <p className="text-gray-300 text-sm leading-relaxed">{description}</p>
-      <div className="absolute -right-10 -bottom-10 w-48 h-48 bg-[var(--cyber-green)]/10 rounded-full blur-[80px] group-hover:bg-[var(--cyber-green)]/30 transition-all duration-500" />
-    </motion.div>
-  );
-}
-
-function PipelineStep({ label, color }) {
-  return (
-    <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5">
-      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
-      <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color }}>{label}</span>
+      }>
+      {currentView === 'apply' ? (
+        <LoanApplication onBack={() => navigateTo('home')} />
+      ) : currentView === 'swarm' ? (
+        <SwarmVisualizer onBack={() => navigateTo('home')} />
+      ) : currentView === 'demo' ? (
+        <MarketplaceDemo onBack={() => navigateTo('home')} />
+      ) : currentView === 'dashboard' ? (
+        <UserDashboard onBack={() => navigateTo('home')} loanStatus={loanStatus}
+          onApplyLoan={handleLoanApplication} onNavigateTo={navigateTo}
+          setStructuredRequest={setStructuredRequest} />
+      ) : currentView === 'shopkeeper' ? (
+        <ShopkeeperDashboard onBack={() => navigateTo('dashboard')} requestData={structuredRequest}
+          onDecision={(decision, paymentResult) => {
+            if (paymentResult) setStructuredRequest((c) => c ? { ...c, paymentResult } : c);
+            setLoanStatus(decision === 'approved' ? 'structured_approved' : 'structured_rejected');
+          }} />
+      ) : currentView === 'compare' ? (
+        <ComparisonDashboard onBack={() => navigateTo('home')} onNavigate={navigateTo} />
+      ) : currentView === 'tcn' ? (
+        <TCNAgentVisualizer onBack={() => navigateTo('home')} />
+      ) : currentView === 'mesh' ? (
+        <CreditReliabilityMesh onBack={() => navigateTo('home')} />
+      ) : currentView === 'decision' ? (
+        <DecisionEngine onBack={() => navigateTo('home')}
+          onSanction={(decision) => {
+            setLoanStatus(decision === 'approved' ? 'approved' : 'rejected');
+            if (decision === 'rejected') navigateTo('dashboard');
+          }} />
+      ) : (
+        <LandingPage
+          t={t}
+          setCurrentView={navigateTo}
+          terminalLines={terminalLines}
+          terminalLoading={terminalLoading}
+          terminalRan={terminalRan}
+          terminalRef={terminalRef}
+          runTerminalDemo={runTerminalDemo}
+        />
+      )}
+      </Suspense>
     </div>
   );
 }
 
-function TerminalLine({ ts, src, msg, c }) {
+/* ─── Landing Page ─── */
+function LandingPage({ t, setCurrentView, terminalLines, terminalLoading, terminalRan, terminalRef, runTerminalDemo }) {
   return (
-    <div className="flex flex-col md:flex-row gap-1 md:gap-4 md:items-start">
-      <span className="text-white/30 shrink-0 text-xs py-0.5">[{ts}ms]</span>
-      <div className="flex gap-2">
-        <span className={`font-bold shrink-0 w-20 text-xs ${c}`}>{src}:</span>
-        <span className="text-gray-300 text-xs">{msg}</span>
+    <>
+      {/* HERO */}
+      <div className="relative min-h-[90vh] flex items-center overflow-hidden">
+        {/* Subtle grid background */}
+        <div className="absolute inset-0 opacity-[0.03]"
+          style={{ backgroundImage: 'radial-gradient(circle, #fff 1px, transparent 1px)', backgroundSize: '24px 24px' }} />
+        {/* Faint glow */}
+        <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[400px] rounded-full bg-emerald-500/[0.04] blur-[100px]" />
+
+        <div className="relative w-full max-w-4xl mx-auto px-6 pt-24">
+          <p className="text-[11px] text-emerald-500 tracking-[0.2em] uppercase mb-5 font-medium">
+            Paytm Build for India &middot; AI for Small Businesses
+          </p>
+
+          <h1 className="text-5xl sm:text-6xl md:text-7xl font-bold mb-4 leading-[1.08] tracking-tight">
+            Trust<span className="text-emerald-500">AI</span>
+          </h1>
+
+          <p className="text-xl text-zinc-300 mb-2 max-w-lg font-medium">
+            Every Soundbox merchant deserves credit.
+          </p>
+
+          <p className="text-base text-zinc-500 mb-10 max-w-lg leading-relaxed">
+            {t.heroDesc}
+          </p>
+
+          <div className="flex flex-wrap gap-3 mb-16">
+            <button onClick={() => setCurrentView('apply')}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-2.5 px-6 rounded-lg transition-colors text-sm">
+              Apply for a Loan
+            </button>
+            <button onClick={() => setCurrentView('swarm')}
+              className="bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 font-medium py-2.5 px-6 rounded-lg transition-colors text-sm">
+              {t.heroBtn}
+            </button>
+            <button onClick={() => setCurrentView('compare')}
+              className="bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 font-medium py-2.5 px-6 rounded-lg transition-colors text-sm">
+              See Comparison
+            </button>
+          </div>
+
+          {/* Mini stats row */}
+          <div className="flex flex-wrap gap-6 text-sm">
+            {[
+              { v: '63M', l: 'MSMEs underserved' },
+              { v: '13M+', l: 'Soundbox merchants' },
+              { v: '<200ms', l: 'UPI scoring' },
+              { v: '₹250B', l: 'credit gap' },
+            ].map((s) => (
+              <div key={s.l}>
+                <span className="text-white font-semibold">{s.v}</span>
+                <span className="text-zinc-600 ml-1.5">{s.l}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
-    </div>
+
+      <main className="w-full max-w-4xl mx-auto px-6 space-y-28 pb-24">
+
+        {/* ── PROBLEM → SOLUTION ── */}
+        <section className="grid grid-cols-1 md:grid-cols-2 gap-12 items-start">
+          <div>
+            <div className="text-[11px] text-zinc-600 uppercase tracking-widest mb-3">The Problem</div>
+            <h2 className="text-2xl font-bold mb-3">CIBIL doesn&apos;t work for small merchants</h2>
+            <p className="text-sm text-zinc-500 leading-relaxed">
+              A kirana store owner with 3 years of Soundbox transactions and 200 daily UPI payments has no CIBIL score. Banks reject them. ₹250 billion in MSME credit demand goes unmet.
+            </p>
+            <div className="mt-4 p-3 rounded-lg bg-red-500/5 border border-red-500/10 text-xs text-red-400/80 font-mono">
+              Merchant &rarr; Bank &rarr; No CIBIL &rarr; Rejected
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px] text-emerald-500 uppercase tracking-widest mb-3">Our Solution</div>
+            <h2 className="text-2xl font-bold mb-3">Score them on what they DO have: UPI data</h2>
+            <p className="text-sm text-zinc-500 leading-relaxed">
+              TrustAI builds a merchant credit graph from Soundbox transactions, QR payments, settlement patterns, and P2P flows. Funds go directly to suppliers via Paytm MCP payment links — zero cash-out risk.
+            </p>
+            <div className="mt-4 p-3 rounded-lg bg-emerald-500/5 border border-emerald-500/10 text-xs text-emerald-400/80 font-mono">
+              UPI data &rarr; AI Score &rarr; Partner Bank (DLG) &rarr; Merchant paid via MCP
+            </div>
+          </div>
+        </section>
+
+        {/* ── TRIANGLE ── */}
+        <section>
+          <div className="text-[11px] text-zinc-600 uppercase tracking-widest mb-3">Core Innovation</div>
+          <h2 className="text-2xl font-bold mb-8">The DLG Lending Loop</h2>
+
+          <div className="flex justify-center mb-8">
+            <svg viewBox="0 0 420 300" className="w-full max-w-md" fill="none">
+              {/* Edges */}
+              <line x1="210" y1="50" x2="70" y2="240" stroke="#27272a" strokeWidth="1" />
+              <line x1="210" y1="50" x2="350" y2="240" stroke="#27272a" strokeWidth="1" />
+              <line x1="70" y1="240" x2="350" y2="240" stroke="#10b981" strokeWidth="1.5" strokeDasharray="6 4">
+                <animate attributeName="stroke-dashoffset" from="0" to="-20" dur="2s" repeatCount="indefinite" />
+              </line>
+
+              {/* Edge labels */}
+              <text x="125" y="138" fill="#3f3f46" fontSize="9" transform="rotate(-52, 125, 138)">UPI credit score</text>
+              <text x="295" y="138" fill="#3f3f46" fontSize="9" transform="rotate(52, 295, 138)">DLG guarantee</text>
+              <text x="210" y="270" fill="#10b981" fontSize="9" textAnchor="middle" opacity="0.7">payment via MCP link</text>
+
+              {/* Merchant (Soundbox) */}
+              <circle cx="210" cy="50" r="24" fill="#18181b" stroke="#3f3f46" strokeWidth="1.5" />
+              <text x="210" y="54" textAnchor="middle" fill="white" fontSize="12" fontWeight="600">M</text>
+              <text x="210" y="28" textAnchor="middle" fill="#71717a" fontSize="9">Merchant (Soundbox)</text>
+
+              {/* Supplier */}
+              <circle cx="70" cy="240" r="24" fill="#18181b" stroke="#10b981" strokeWidth="1.5" />
+              <text x="70" y="244" textAnchor="middle" fill="#10b981" fontSize="12" fontWeight="600">S</text>
+              <text x="70" y="282" textAnchor="middle" fill="#71717a" fontSize="9">Supplier</text>
+
+              {/* Partner Bank */}
+              <circle cx="350" cy="240" r="24" fill="#18181b" stroke="#3f3f46" strokeWidth="1.5" />
+              <text x="350" y="244" textAnchor="middle" fill="white" fontSize="12" fontWeight="600">$</text>
+              <text x="350" y="282" textAnchor="middle" fill="#71717a" fontSize="9">Partner Bank</text>
+            </svg>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-px bg-zinc-800/50 rounded-xl overflow-hidden">
+            {[
+              { step: '01', title: 'AI scores UPI graph', desc: 'GNN analyzes Soundbox transaction patterns, QR adoption, settlement velocity, and P2P flow symmetry. TCN checks 12-week behavioral stability.' },
+              { step: '02', title: 'Partner bank lends via DLG', desc: 'Paytm guarantees the loan using the AI score. Bank disburses — funds go directly to the supplier via MCP payment link. Cash never touches the borrower.' },
+              { step: '03', title: 'Auto-repayment from settlements', desc: 'Repayment is auto-deducted as a percentage of the merchant\'s daily Paytm settlements. No separate EMI, no missed payments.' },
+            ].map((s) => (
+              <div key={s.step} className="bg-zinc-950 p-5">
+                <span className="text-emerald-500/60 text-xs font-mono">{s.step}</span>
+                <h3 className="text-sm font-semibold text-white mt-1 mb-2">{s.title}</h3>
+                <p className="text-xs text-zinc-500 leading-relaxed">{s.desc}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* ── PIPELINE + TERMINAL ── */}
+        <section>
+          <div className="text-[11px] text-zinc-600 uppercase tracking-widest mb-3">Agent Architecture</div>
+          <h2 className="text-2xl font-bold mb-2">Prism-inspired swarm</h2>
+          <p className="text-sm text-zinc-500 mb-6">4 agents analyze UPI transaction graph in real-time. Click &quot;Run&quot; to score a merchant.</p>
+
+          <div className="flex items-center gap-1.5 flex-wrap mb-6 text-xs font-mono">
+            <span className="px-2 py-1 rounded bg-violet-500/10 text-violet-400 border border-violet-500/10">PLAN</span>
+            <span className="text-zinc-700">&rarr;</span>
+            <span className="text-zinc-700">[</span>
+            <span className="px-2 py-1 rounded bg-blue-500/10 text-blue-400 border border-blue-500/10">ANALYZE</span>
+            <span className="text-zinc-600 text-[10px]">||</span>
+            <span className="px-2 py-1 rounded bg-amber-500/10 text-amber-400 border border-amber-500/10">VERIFY</span>
+            <span className="text-zinc-700">]</span>
+            <span className="text-zinc-700">&rarr;</span>
+            <span className="px-2 py-1 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/10">VALIDATE</span>
+            <span className="text-zinc-700">&rarr;</span>
+            <span className="px-2 py-1 rounded bg-emerald-500/10 text-emerald-500 border border-emerald-500/10">DISBURSE</span>
+          </div>
+
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-2.5 border-b border-zinc-800/60">
+              <span className="text-[11px] text-zinc-600 font-mono">trustai-swarm</span>
+              <button onClick={runTerminalDemo} disabled={terminalLoading}
+                className="text-[11px] px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white transition-colors font-medium">
+                {terminalLoading ? 'Running...' : terminalRan ? 'Run Again' : 'Run Demo'}
+              </button>
+            </div>
+            <div className="p-4 font-mono text-[11px] space-y-1.5 h-64 overflow-y-auto custom-scrollbar" ref={terminalRef}>
+              {terminalLines.map((line, i) => (
+                <div key={i} className="flex gap-2">
+                  <span className="text-zinc-700 shrink-0 w-7 text-right">{line.ts}</span>
+                  <span className={`shrink-0 w-16 ${agentColor(line.src)}`}>{line.src}</span>
+                  <span className="text-zinc-500">{line.msg}</span>
+                </div>
+              ))}
+              {!terminalRan && !terminalLoading && (
+                <div className="text-zinc-700 mt-2">Press &quot;Run Demo&quot; to execute against the live backend &rarr;</div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        {/* ── EXPLORE VIEWS ── */}
+        <section>
+          <div className="text-[11px] text-zinc-600 uppercase tracking-widest mb-3">Explore</div>
+          <h2 className="text-2xl font-bold mb-6">Live demos</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {[
+              { name: 'Apply for Loan', desc: 'Fill your details and get a real-time AI credit decision', view: 'apply', highlight: true },
+              { name: 'Agent Swarm', desc: 'Watch agents execute with WebSocket streaming', view: 'swarm' },
+              { name: 'Decision Engine', desc: 'Gradient attribution for every credit decision', view: 'decision' },
+              { name: 'Credit Graph', desc: '21-node merchant graph (D3)', view: 'mesh' },
+              { name: 'Traditional vs TrustAI', desc: 'Side-by-side comparison', view: 'compare' },
+              { name: 'Merchant View', desc: 'Shopkeeper payment tracking', view: 'shopkeeper' },
+            ].map((item) => (
+              <button key={item.name} onClick={() => setCurrentView(item.view)}
+                className={`text-left p-4 rounded-xl border transition-all group ${
+                  item.highlight
+                    ? 'border-emerald-500/30 hover:border-emerald-500/50 bg-emerald-500/5 hover:bg-emerald-500/10'
+                    : 'border-zinc-800/80 hover:border-zinc-700 bg-zinc-900/30 hover:bg-zinc-900/60'
+                }`}>
+                <div className={`text-sm font-medium transition-colors mb-1 ${
+                  item.highlight ? 'text-emerald-400 group-hover:text-emerald-300' : 'text-zinc-300 group-hover:text-white'
+                }`}>{item.name}</div>
+                <div className="text-[11px] text-zinc-600">{item.desc}</div>
+              </button>
+            ))}
+          </div>
+        </section>
+
+        {/* ── PAYTM ALIGNMENT ── */}
+        <section>
+          <div className="text-[11px] text-zinc-600 uppercase tracking-widest mb-3">Alignment</div>
+          <h2 className="text-2xl font-bold mb-6">Built on Paytm&apos;s stack</h2>
+          <div className="space-y-0 border border-zinc-800/60 rounded-xl overflow-hidden">
+            {[
+              ['Soundbox (13M merchants)', 'Transaction data \u2192 GNN credit graph nodes'],
+              ['DLG Lending Model', 'AI scoring enables Paytm to guarantee merchant loans to partner banks'],
+              ['Credit Line on UPI', 'Purpose-locked disbursement via MCP payment links'],
+              ['Paytm MCP Server', 'create_payment_link + fetch_transactions for purpose-locked lending'],
+              ['AI Soundbox (11 langs)', 'Hindi voice input + merchant credit score on device'],
+              ['UPI P2M + QR + POS', 'Multi-channel graph features for credit scoring'],
+            ].map(([paytm, ours], i) => (
+              <div key={paytm} className={`flex ${i > 0 ? 'border-t border-zinc-800/40' : ''}`}>
+                <div className="w-1/3 p-3 text-xs text-zinc-600 bg-zinc-900/30">{paytm}</div>
+                <div className="w-2/3 p-3 text-xs text-zinc-400">{ours}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* ── STACK ── */}
+        <section>
+          <div className="text-[11px] text-zinc-600 uppercase tracking-widest mb-4">Tech Stack</div>
+          <div className="flex flex-wrap gap-2">
+            {['Python', 'FastAPI', 'PyTorch', 'GNN (GCN)', 'TCN', 'React', 'D3.js', 'Paytm MCP', 'UPI Graph Scoring', 'DLG Model', 'Gradient Attribution'].map((t) => (
+              <span key={t} className="text-[11px] text-zinc-500 bg-zinc-900/50 border border-zinc-800/60 px-3 py-1.5 rounded-md">{t}</span>
+            ))}
+          </div>
+        </section>
+      </main>
+
+      <footer className="w-full py-6 text-center border-t border-zinc-800/40">
+        <p className="text-zinc-700 text-xs">TrustAI &middot; Paytm Build for India &middot; DLG Lending &middot; UPI Credit Scoring</p>
+      </footer>
+    </>
   );
 }

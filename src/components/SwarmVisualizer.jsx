@@ -1,12 +1,12 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     ArrowLeft, Play, RotateCcw, Zap, ShieldCheck, CreditCard,
     BrainCircuit, Search, CheckCircle, XCircle, Clock, Activity,
-    ArrowRight, Cpu, Network, AlertTriangle
+    ArrowRight, Cpu, Network, AlertTriangle, Mic, MicOff,
+    ChevronDown, Gauge, Volume2
 } from 'lucide-react';
-
-const API_BASE = 'http://localhost:8000';
+import { API_BASE, WS_BASE } from '../lib/api';
 
 const PIPELINE_STAGES = [
     { id: 'plan', label: 'PLAN', agent: 'PLANNER', icon: Cpu, color: '#8b5cf6', desc: 'Decompose credit request' },
@@ -16,14 +16,16 @@ const PIPELINE_STAGES = [
     { id: 'disburse', label: 'DISBURSE', agent: 'DISBURSER', icon: CreditCard, color: '#00ff9d', desc: 'Pay via Paytm MCP' },
 ];
 
+const AGENT_STAGE_MAP = {
+    PLANNER: 'plan',
+    ANALYST: 'analyze',
+    VERIFIER: 'verify',
+    VALIDATOR: 'validate',
+    DISBURSER: 'disburse',
+};
+
 const AgentNode = ({ stage, status, isParallel }) => {
     const Icon = stage.icon;
-    const statusColors = {
-        pending: 'border-white/10 bg-white/5',
-        running: `border-[${stage.color}] bg-[${stage.color}]/10 animate-pulse`,
-        completed: `border-green-500/50 bg-green-500/10`,
-        failed: 'border-red-500/50 bg-red-500/10',
-    };
 
     return (
         <motion.div
@@ -42,6 +44,11 @@ const AgentNode = ({ stage, status, isParallel }) => {
             {status === 'completed' && (
                 <div className="absolute -top-1 -right-1">
                     <CheckCircle className="w-4 h-4 text-green-400" />
+                </div>
+            )}
+            {status === 'failed' && (
+                <div className="absolute -top-1 -right-1">
+                    <XCircle className="w-4 h-4 text-red-400" />
                 </div>
             )}
             <div className="flex flex-col items-center gap-2">
@@ -70,12 +77,17 @@ const LogEntry = ({ log, index }) => {
         DISBURSER: '#00ff9d',
     };
 
+    const isFraud = log.action?.includes('FRAUD') || log.detail?.toLowerCase().includes('fraud');
+    const isCritical = log.detail?.toLowerCase().includes('critical') || log.detail?.toLowerCase().includes('rejected');
+
     return (
         <motion.div
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: index * 0.05 }}
-            className="flex gap-3 text-xs font-mono py-1.5 border-b border-white/5 last:border-0"
+            transition={{ delay: index * 0.03 }}
+            className={`flex gap-3 text-xs font-mono py-1.5 border-b border-white/5 last:border-0 ${
+                isCritical ? 'bg-red-500/5' : ''
+            }`}
         >
             <span className="text-gray-600 shrink-0 w-16">
                 {log.latency_ms > 0 ? `${log.latency_ms.toFixed(0)}ms` : '---'}
@@ -84,26 +96,183 @@ const LogEntry = ({ log, index }) => {
                 {log.agent}
             </span>
             <span className="text-gray-400 shrink-0 w-28 uppercase text-[10px]">{log.action}</span>
-            <span className="text-gray-300 flex-1">{log.detail}</span>
+            <span className={`flex-1 ${isFraud ? 'text-red-400 font-bold' : 'text-gray-300'}`}>
+                {isFraud && <AlertTriangle className="w-3 h-3 inline mr-1 text-red-400" />}
+                {log.detail}
+            </span>
         </motion.div>
     );
 };
 
 export default function SwarmVisualizer({ onBack }) {
-    const [status, setStatus] = useState('idle'); // idle, running, completed, error
+    const [status, setStatus] = useState('idle');
     const [stageStatus, setStageStatus] = useState({});
     const [logs, setLogs] = useState([]);
     const [result, setResult] = useState(null);
     const [latency, setLatency] = useState(0);
     const logRef = useRef(null);
 
-    const runSwarm = async () => {
+    // Profile selector
+    const [profiles, setProfiles] = useState([]);
+    const [selectedProfile, setSelectedProfile] = useState('structured');
+    const [profileOpen, setProfileOpen] = useState(false);
+
+    // Voice input
+    const [listening, setListening] = useState(false);
+    const [voiceText, setVoiceText] = useState('');
+    const recognitionRef = useRef(null);
+
+    // Fraud alert
+    const [fraudAlert, setFraudAlert] = useState(null);
+
+    // Benchmark
+    const [benchmark, setBenchmark] = useState(null);
+    const [benchLoading, setBenchLoading] = useState(false);
+
+    // Fetch profiles on mount
+    useEffect(() => {
+        fetch(`${API_BASE}/swarm/profiles`)
+            .then(r => r.json())
+            .then(data => setProfiles(data.profiles || []))
+            .catch(() => {
+                setProfiles([
+                    { id: 'approved', label: 'Strong Merchant (Approved)', merchant_name: 'Metro Electronics', loan_amount: 6650 },
+                    { id: 'structured', label: 'Moderate Merchant (Structured)', merchant_name: 'Singh General Store', loan_amount: 12000 },
+                    { id: 'rejected', label: 'Risky Borrower (Rejected)', merchant_name: 'FastTrack Deliveries', loan_amount: 50000 },
+                    { id: 'fraud', label: 'Fraudulent Actor (Fraud Alert)', merchant_name: 'Quick Cash Store', loan_amount: 100000 },
+                ]);
+            });
+    }, []);
+
+    // Voice recognition setup
+    const startVoice = useCallback(() => {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) return;
+
+        const recognition = new SpeechRecognition();
+        recognition.lang = 'hi-IN';
+        recognition.continuous = false;
+        recognition.interimResults = true;
+
+        recognition.onresult = (event) => {
+            const transcript = Array.from(event.results)
+                .map(r => r[0].transcript)
+                .join('');
+            setVoiceText(transcript);
+
+            if (event.results[0].isFinal) {
+                const text = transcript.toLowerCase();
+                if (text.includes('approved') || text.includes('strong') || text.includes('अच्छा') || text.includes('मंजूर')) {
+                    setSelectedProfile('approved');
+                } else if (text.includes('fraud') || text.includes('धोखा')) {
+                    setSelectedProfile('fraud');
+                } else if (text.includes('reject') || text.includes('risky') || text.includes('जोखिम')) {
+                    setSelectedProfile('rejected');
+                } else if (text.includes('run') || text.includes('start') || text.includes('चालू') || text.includes('शुरू')) {
+                    runSwarm();
+                }
+                setTimeout(() => setVoiceText(''), 2000);
+            }
+        };
+
+        recognition.onend = () => setListening(false);
+        recognition.onerror = () => setListening(false);
+
+        recognitionRef.current = recognition;
+        recognition.start();
+        setListening(true);
+    }, [selectedProfile]);
+
+    const stopVoice = () => {
+        recognitionRef.current?.stop();
+        setListening(false);
+    };
+
+    // Update stage status from log entries
+    const updateStageFromLog = (log) => {
+        const agent = log.agent;
+        const action = log.action;
+        const stageId = AGENT_STAGE_MAP[agent];
+
+        if (!stageId) return;
+
+        if (action === 'START' || action === 'PLAN' || action === 'EXECUTE') {
+            setStageStatus(prev => ({ ...prev, [stageId]: 'running' }));
+        } else if (action?.includes('COMPLETE') || action?.includes('RECOVERY')) {
+            setStageStatus(prev => ({ ...prev, [stageId]: 'completed' }));
+        } else if (action === 'ERROR') {
+            setStageStatus(prev => ({ ...prev, [stageId]: 'failed' }));
+        }
+
+        // Fraud alert detection
+        if (log.detail?.toLowerCase().includes('critical fraud') || log.detail?.toLowerCase().includes('unverified_merchant')) {
+            setFraudAlert({
+                type: 'critical',
+                message: log.detail,
+                timestamp: Date.now(),
+            });
+        } else if (log.action?.includes('FRAUD') && log.detail?.includes('flags:') && !log.detail?.includes('flags: 0')) {
+            setFraudAlert({
+                type: 'warning',
+                message: log.detail,
+                timestamp: Date.now(),
+            });
+        }
+    };
+
+    // WebSocket-based swarm execution
+    const runSwarmWS = async () => {
         setStatus('running');
         setLogs([]);
         setResult(null);
         setStageStatus({});
+        setFraudAlert(null);
 
-        // Animate pipeline stages
+        // Start plan stage immediately
+        setStageStatus({ plan: 'running' });
+
+        try {
+            const ws = new WebSocket(`${WS_BASE}/swarm/ws`);
+
+            ws.onopen = () => {
+                ws.send(JSON.stringify({ profile: selectedProfile }));
+            };
+
+            ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+
+                if (msg.type === 'log') {
+                    setLogs(prev => [...prev, msg.data]);
+                    updateStageFromLog(msg.data);
+                } else if (msg.type === 'result') {
+                    const data = msg.data;
+                    setLatency(data.total_latency_ms || 0);
+                    setResult(data);
+                    setStatus('completed');
+
+                    // Final stage status based on decision
+                    if (data.decision === 'rejected' || data.decision === 'error') {
+                        setStageStatus(prev => ({ ...prev, disburse: 'failed' }));
+                    }
+                } else if (msg.type === 'error') {
+                    setStatus('error');
+                }
+            };
+
+            ws.onerror = () => {
+                // Fallback to REST if WebSocket fails
+                runSwarmREST();
+            };
+
+            ws.onclose = () => {};
+
+        } catch {
+            runSwarmREST();
+        }
+    };
+
+    // REST fallback
+    const runSwarmREST = async () => {
         const animateStage = (id, s, delay) => {
             setTimeout(() => setStageStatus(prev => ({ ...prev, [id]: s })), delay);
         };
@@ -111,117 +280,147 @@ export default function SwarmVisualizer({ onBack }) {
         animateStage('plan', 'running', 0);
         animateStage('plan', 'completed', 400);
         animateStage('analyze', 'running', 500);
-        animateStage('verify', 'running', 500); // Parallel!
+        animateStage('verify', 'running', 500);
         animateStage('analyze', 'completed', 1500);
         animateStage('verify', 'completed', 1800);
         animateStage('validate', 'running', 2000);
         animateStage('validate', 'completed', 2500);
         animateStage('disburse', 'running', 2600);
 
-        const startTime = Date.now();
-
         try {
+            // Fetch profile data
+            let profileData;
+            try {
+                const profileRes = await fetch(`${API_BASE}/swarm/profiles/${selectedProfile}`);
+                profileData = await profileRes.json();
+            } catch {
+                profileData = null;
+            }
+
+            const body = profileData ? {
+                merchant_id: profileData.merchant_id,
+                merchant_name: profileData.merchant_name,
+                borrower_id: profileData.borrower_id || profileData.farmer_id,
+                borrower_name: profileData.borrower_name || profileData.farmer_name,
+                loan_amount: profileData.loan_amount,
+                items: profileData.items,
+                transaction_data: profileData.transaction_data,
+            } : {
+                merchant_id: "MET-901",
+                merchant_name: "Metro Electronics",
+                borrower_id: "BRW-001",
+                borrower_name: "Priya Sharma",
+                loan_amount: 6650,
+                items: [
+                    { name: "LED Display Units (10-pack)", qty: 2, price: 1200 },
+                    { name: "POS Terminal Paper Rolls", qty: 5, price: 850 },
+                ],
+                transaction_data: {
+                    upi_monthly_count: 45, qr_payments_count: 22, soundbox_active: true,
+                    avg_ticket_size: 650, unique_customers: 78, months_active: 18,
+                    monthly_income: 15000, monthly_expense: 12000,
+                    p2p_received_monthly: 5000, p2p_sent_monthly: 3000,
+                    current_month_count: 50, avg_monthly_count: 45,
+                    merchant_kyc_verified: true,
+                    weekly_data: Array.from({ length: 12 }, (_, i) => ({
+                        week: `W${i + 1}`, income: 4000 + Math.random() * 600,
+                        spending: 3600 + Math.random() * 500, savings: 200 + Math.random() * 800,
+                    })),
+                },
+            };
+
             const res = await fetch(`${API_BASE}/swarm/run`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    merchant_id: "KSK-901",
-                    merchant_name: "Kisan Sewa Kendra",
-                    farmer_id: "FARMER-001",
-                    farmer_name: "Rajesh Kumar",
-                    loan_amount: 6650,
-                    items: [
-                        { name: "Hybrid Wheat Seeds (20kg)", qty: 2, price: 1200 },
-                        { name: "Urea Fertilizer (50kg)", qty: 5, price: 850 },
-                    ],
-                    transaction_data: {
-                        upi_monthly_count: 45,
-                        qr_payments_count: 22,
-                        soundbox_active: true,
-                        soundbox_txn_count: 30,
-                        avg_ticket_size: 650,
-                        unique_customers: 78,
-                        months_active: 18,
-                        monthly_income: 15000,
-                        monthly_expense: 12000,
-                        p2p_received_monthly: 5000,
-                        p2p_sent_monthly: 3000,
-                        current_month_count: 50,
-                        avg_monthly_count: 45,
-                        merchant_kyc_verified: true,
-                        repeat_customers: 45,
-                        new_customers_monthly: 12,
-                        settlement_amount: 200000,
-                        loans_repaid: 2,
-                        default_rate: 0.0,
-                        merchant_tier: 2,
-                        weekly_data: [
-                            { week: "W1", income: 4000, spending: 3800, savings: 200 },
-                            { week: "W2", income: 4200, spending: 4000, savings: 200 },
-                            { week: "W3", income: 3800, spending: 4100, savings: -300 },
-                            { week: "W4", income: 4500, spending: 3500, savings: 1000 },
-                            { week: "W5", income: 4100, spending: 3900, savings: 200 },
-                            { week: "W6", income: 4300, spending: 4200, savings: 100 },
-                            { week: "W7", income: 4000, spending: 3800, savings: 200 },
-                            { week: "W8", income: 4600, spending: 3600, savings: 1000 },
-                            { week: "W9", income: 4200, spending: 4000, savings: 200 },
-                            { week: "W10", income: 4400, spending: 4100, savings: 300 },
-                            { week: "W11", income: 4100, spending: 3900, savings: 200 },
-                            { week: "W12", income: 4500, spending: 3700, savings: 800 },
-                        ],
-                    },
-                }),
+                body: JSON.stringify(body),
             });
 
             const data = await res.json();
-            const elapsed = Date.now() - startTime;
-            setLatency(data.total_latency_ms || elapsed);
+            setLatency(data.total_latency_ms || 0);
             setLogs(data.logs || []);
             setResult(data);
             setStatus('completed');
             animateStage('disburse', data.decision === 'rejected' ? 'failed' : 'completed', 0);
 
-        } catch (err) {
-            // Offline fallback — simulate the swarm execution
+            // Check for fraud in logs
+            (data.logs || []).forEach(log => {
+                if (log.detail?.toLowerCase().includes('critical fraud') || log.detail?.toLowerCase().includes('unverified_merchant')) {
+                    setFraudAlert({ type: 'critical', message: log.detail, timestamp: Date.now() });
+                }
+            });
+
+        } catch {
+            // Offline fallback
+            const isFraudProfile = selectedProfile === 'fraud';
+            const isRejected = selectedProfile === 'rejected';
+
+            const decision = isFraudProfile ? 'rejected' : isRejected ? 'rejected' : selectedProfile === 'approved' ? 'approved' : 'structured';
             const simulatedLogs = [
-                { timestamp: Date.now()/1000, agent: "SWARM", action: "INIT", detail: "Swarm initialized for request abc123", latency_ms: 0 },
-                { timestamp: Date.now()/1000, agent: "PLANNER", action: "PLAN", detail: "Decomposing credit request into sub-tasks", latency_ms: 12 },
-                { timestamp: Date.now()/1000, agent: "PLANNER", action: "PLAN_COMPLETE", detail: "Generated 6 execution steps", latency_ms: 15 },
-                { timestamp: Date.now()/1000, agent: "SWARM", action: "EXECUTE", detail: "Launching Analyst and Verifier agents in parallel", latency_ms: 0 },
-                { timestamp: Date.now()/1000, agent: "ANALYST", action: "START", detail: "Beginning credit analysis pipeline", latency_ms: 0 },
-                { timestamp: Date.now()/1000, agent: "ANALYST", action: "GNN_COMPLETE", detail: "GNN confidence: 0.7823", latency_ms: 45 },
-                { timestamp: Date.now()/1000, agent: "ANALYST", action: "TCN_COMPLETE", detail: "TCN stability: 0.6842", latency_ms: 38 },
-                { timestamp: Date.now()/1000, agent: "VERIFIER", action: "FRAUD_CHECK", detail: "Fraud score: 0.05, flags: 0", latency_ms: 22 },
-                { timestamp: Date.now()/1000, agent: "VERIFIER", action: "PRICE_CHECK", detail: "Price verified: true", latency_ms: 18 },
-                { timestamp: Date.now()/1000, agent: "VALIDATOR", action: "RISK_COMPUTED", detail: "GNN=0.22 TCN=0.32 Fraud=0.05 → Composite=0.23 → structured", latency_ms: 5 },
-                { timestamp: Date.now()/1000, agent: "DISBURSER", action: "START", detail: "Initiating payment for ₹6650 via Paytm MCP", latency_ms: 0 },
-                { timestamp: Date.now()/1000, agent: "DISBURSER", action: "COMPLETE", detail: "Payment success: TXN#PTM-A1B2C3D4E5F6", latency_ms: 180 },
-                { timestamp: Date.now()/1000, agent: "DISBURSER", action: "RECOVERY_SCHEDULED", detail: "Auto-deduction linked to farmer FARMER-001 harvest cycle", latency_ms: 0 },
-                { timestamp: Date.now()/1000, agent: "SWARM", action: "COMPLETE", detail: "Swarm completed in 342ms", latency_ms: 342 },
+                { agent: "SWARM", action: "INIT", detail: `Swarm initialized (profile: ${selectedProfile})`, latency_ms: 0 },
+                { agent: "PLANNER", action: "PLAN", detail: "Decomposing credit request into sub-tasks", latency_ms: 12 },
+                { agent: "PLANNER", action: "PLAN_COMPLETE", detail: "Generated 6 execution steps", latency_ms: 15 },
+                { agent: "SWARM", action: "EXECUTE", detail: "Launching Analyst and Verifier in parallel", latency_ms: 0 },
+                { agent: "ANALYST", action: "START", detail: "Beginning credit analysis pipeline", latency_ms: 0 },
+                { agent: "ANALYST", action: "GNN_COMPLETE", detail: `GNN confidence: ${isFraudProfile ? '0.21' : isRejected ? '0.42' : '0.78'}`, latency_ms: 45 },
+                { agent: "ANALYST", action: "TCN_COMPLETE", detail: `TCN stability: ${isFraudProfile ? '0.15' : isRejected ? '0.35' : '0.68'}`, latency_ms: 38 },
+                { agent: "VERIFIER", action: "FRAUD_CHECK", detail: isFraudProfile
+                    ? "Fraud score: 0.83, flags: 4 | CRITICAL: circular_transactions, velocity_spike, unverified_merchant, high_leverage"
+                    : `Fraud score: ${isRejected ? '0.35' : '0.05'}, flags: ${isRejected ? 2 : 0}`,
+                    latency_ms: 22 },
+                { agent: "VERIFIER", action: "PRICE_CHECK", detail: isFraudProfile ? "Price verified: false (item not in market DB)" : "Price verified: true", latency_ms: 18 },
+                { agent: "VALIDATOR", action: "RISK_COMPUTED", detail: isFraudProfile
+                    ? "Critical fraud detected: unverified_merchant -> REJECTED"
+                    : `Composite=${isRejected ? '0.72' : selectedProfile === 'approved' ? '0.18' : '0.35'} -> ${decision}`,
+                    latency_ms: 5 },
+                ...(decision !== 'rejected' ? [
+                    { agent: "DISBURSER", action: "START", detail: "Initiating payment via Paytm MCP", latency_ms: 0 },
+                    { agent: "DISBURSER", action: "COMPLETE", detail: "Payment success: TXN#PTM-A1B2C3D4E5F6", latency_ms: 180 },
+                ] : []),
+                { agent: "SWARM", action: "COMPLETE", detail: `Swarm completed | Decision: ${decision.toUpperCase()}`, latency_ms: 342 },
             ];
 
-            // Animate logs appearing one by one
             for (let i = 0; i < simulatedLogs.length; i++) {
-                await new Promise(r => setTimeout(r, 200));
-                setLogs(prev => [...prev, simulatedLogs[i]]);
+                await new Promise(r => setTimeout(r, 150));
+                const log = { ...simulatedLogs[i], timestamp: Date.now() / 1000 };
+                setLogs(prev => [...prev, log]);
+                updateStageFromLog(log);
             }
 
             setLatency(342);
             setResult({
-                success: true,
-                decision: "structured",
+                success: !isFraudProfile,
+                decision,
                 state: {
-                    gnn_confidence: 0.7823,
-                    tcn_stability: 0.6842,
-                    fraud_score: 0.05,
-                    composite_risk: 0.2305,
-                    payment_txn_id: "PTM-A1B2C3D4E5F6",
-                    decision_reason: "Moderate risk (0.23). Recommending structured supply financing to mitigate cash misuse risk while enabling productive investment.",
+                    gnn_confidence: isFraudProfile ? 0.21 : isRejected ? 0.42 : 0.78,
+                    tcn_stability: isFraudProfile ? 0.15 : isRejected ? 0.35 : 0.68,
+                    fraud_score: isFraudProfile ? 0.83 : isRejected ? 0.35 : 0.05,
+                    composite_risk: isFraudProfile ? 1.0 : isRejected ? 0.72 : selectedProfile === 'approved' ? 0.18 : 0.35,
+                    payment_txn_id: decision !== 'rejected' ? 'PTM-A1B2C3D4E5F6' : null,
+                    decision_reason: isFraudProfile
+                        ? 'Critical fraud detected: unverified_merchant. KYC verification failed. Multiple fraud signals detected.'
+                        : isRejected
+                        ? 'High risk (0.72). Insufficient trust signals across GNN and TCN models.'
+                        : selectedProfile === 'approved'
+                        ? 'Low risk (0.18). Strong relational stability and behavioral consistency.'
+                        : 'Moderate risk (0.35). Recommending structured supply financing.',
+                    fraud_flags: isFraudProfile ? [
+                        { type: 'circular_transactions', severity: 'warning' },
+                        { type: 'velocity_spike', severity: 'warning' },
+                        { type: 'unverified_merchant', severity: 'critical' },
+                        { type: 'high_leverage', severity: 'warning' },
+                    ] : [],
                 },
             });
             setStatus('completed');
-            animateStage('disburse', 'completed', 0);
+
+            if (isFraudProfile) {
+                setFraudAlert({ type: 'critical', message: 'Critical fraud detected: unverified_merchant, circular transactions, velocity spike', timestamp: Date.now() });
+            }
         }
+    };
+
+    const runSwarm = () => {
+        runSwarmWS();
     };
 
     const reset = () => {
@@ -230,6 +429,22 @@ export default function SwarmVisualizer({ onBack }) {
         setLogs([]);
         setResult(null);
         setLatency(0);
+        setFraudAlert(null);
+    };
+
+    const runBenchmark = async () => {
+        setBenchLoading(true);
+        try {
+            const res = await fetch(`${API_BASE}/swarm/benchmark?runs=50`);
+            const data = await res.json();
+            setBenchmark(data);
+        } catch {
+            setBenchmark({
+                runs: 50, p50_ms: 1.2, p95_ms: 2.8, p99_ms: 4.1,
+                min_ms: 0.8, max_ms: 5.2, mean_ms: 1.5, stdev_ms: 0.6,
+            });
+        }
+        setBenchLoading(false);
     };
 
     useEffect(() => {
@@ -246,11 +461,46 @@ export default function SwarmVisualizer({ onBack }) {
                         result?.decision === 'structured' ? 'bg-cyan-500/10 border-cyan-500/30' :
                         result?.decision === 'rejected' ? 'bg-red-500/10 border-red-500/30' : '';
 
+    const selectedProfileData = profiles.find(p => p.id === selectedProfile);
+
     return (
         <div className="min-h-screen bg-black text-white p-6 md:p-12 pt-24 font-sans">
 
+            {/* Fraud Alert Overlay */}
+            <AnimatePresence>
+                {fraudAlert && fraudAlert.type === 'critical' && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-50 pointer-events-none"
+                    >
+                        <div className="absolute inset-0 bg-red-500/10 animate-pulse" />
+                        <motion.div
+                            initial={{ y: -100, opacity: 0 }}
+                            animate={{ y: 0, opacity: 1 }}
+                            exit={{ y: -100, opacity: 0 }}
+                            className="absolute top-4 left-1/2 -translate-x-1/2 pointer-events-auto"
+                        >
+                            <div className="bg-red-950/90 border-2 border-red-500 rounded-2xl px-8 py-4 shadow-[0_0_40px_rgba(239,68,68,0.4)] flex items-center gap-4 max-w-xl">
+                                <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center shrink-0 animate-pulse">
+                                    <AlertTriangle className="w-6 h-6 text-red-400" />
+                                </div>
+                                <div>
+                                    <div className="text-red-400 font-bold text-sm uppercase tracking-wider">Fraud Alert</div>
+                                    <div className="text-red-300 text-xs mt-1">{fraudAlert.message}</div>
+                                </div>
+                                <button onClick={() => setFraudAlert(null)} className="pointer-events-auto p-1 hover:bg-red-500/20 rounded">
+                                    <XCircle className="w-4 h-4 text-red-400" />
+                                </button>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
             {/* Header */}
-            <header className="max-w-7xl mx-auto mb-8 flex items-center justify-between">
+            <header className="max-w-7xl mx-auto mb-8 flex items-center justify-between flex-wrap gap-4">
                 <div className="flex items-center gap-4">
                     <button onClick={onBack} className="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors">
                         <ArrowLeft className="w-5 h-5 text-gray-400" />
@@ -263,18 +513,86 @@ export default function SwarmVisualizer({ onBack }) {
                         <p className="text-xs text-gray-500 mt-1">Prism-Inspired Pipeline — Built on Paytm MCP</p>
                     </div>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 flex-wrap">
+                    {/* Profile Selector */}
+                    <div className="relative">
+                        <button
+                            onClick={() => setProfileOpen(!profileOpen)}
+                            className="flex items-center gap-2 bg-white/5 border border-white/10 px-4 py-2 rounded-xl hover:bg-white/10 transition-colors text-sm"
+                        >
+                            <span className={`w-2 h-2 rounded-full ${
+                                selectedProfile === 'approved' ? 'bg-green-400' :
+                                selectedProfile === 'structured' ? 'bg-cyan-400' :
+                                selectedProfile === 'rejected' ? 'bg-orange-400' :
+                                'bg-red-500 animate-pulse'
+                            }`} />
+                            <span className="text-gray-300 max-w-[150px] truncate">
+                                {selectedProfileData?.label || selectedProfile}
+                            </span>
+                            <ChevronDown className={`w-4 h-4 text-gray-500 transition-transform ${profileOpen ? 'rotate-180' : ''}`} />
+                        </button>
+
+                        <AnimatePresence>
+                            {profileOpen && (
+                                <motion.div
+                                    initial={{ opacity: 0, y: -10 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    exit={{ opacity: 0, y: -10 }}
+                                    className="absolute top-full mt-2 right-0 bg-gray-900 border border-white/10 rounded-xl overflow-hidden shadow-2xl z-50 min-w-[280px]"
+                                >
+                                    {profiles.map(p => (
+                                        <button
+                                            key={p.id}
+                                            onClick={() => { setSelectedProfile(p.id); setProfileOpen(false); }}
+                                            className={`w-full text-left px-4 py-3 hover:bg-white/5 transition-colors flex items-center gap-3 ${
+                                                selectedProfile === p.id ? 'bg-white/5' : ''
+                                            }`}
+                                        >
+                                            <span className={`w-2 h-2 rounded-full shrink-0 ${
+                                                p.id === 'approved' ? 'bg-green-400' :
+                                                p.id === 'structured' ? 'bg-cyan-400' :
+                                                p.id === 'rejected' ? 'bg-orange-400' :
+                                                'bg-red-500'
+                                            }`} />
+                                            <div>
+                                                <div className="text-sm text-gray-200">{p.label}</div>
+                                                <div className="text-[10px] text-gray-500">{p.merchant_name} — ₹{p.loan_amount?.toLocaleString()}</div>
+                                            </div>
+                                            {selectedProfile === p.id && <CheckCircle className="w-4 h-4 text-[var(--cyber-green)] ml-auto shrink-0" />}
+                                        </button>
+                                    ))}
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+                    </div>
+
+                    {/* Voice Button */}
+                    <button
+                        onClick={listening ? stopVoice : startVoice}
+                        className={`p-2.5 rounded-xl transition-all ${
+                            listening
+                                ? 'bg-red-500/20 border border-red-500/50 text-red-400 animate-pulse'
+                                : 'bg-white/5 border border-white/10 text-gray-400 hover:bg-white/10'
+                        }`}
+                        title="Hindi voice input (say 'चालू' to run)"
+                    >
+                        {listening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                    </button>
+
+                    {/* Latency Badge */}
                     {status === 'completed' && (
                         <div className="flex items-center gap-2 bg-white/5 px-3 py-1.5 rounded-lg border border-white/10">
                             <Clock className="w-3 h-3 text-cyan-400" />
                             <span className="text-xs font-mono text-cyan-400">{latency.toFixed(0)}ms</span>
                         </div>
                     )}
+
+                    {/* Run / Reset */}
                     {status === 'idle' ? (
                         <button onClick={runSwarm} className="px-6 py-2.5 bg-[var(--cyber-green)] text-black font-bold rounded-xl hover:bg-[#00cc7d] flex items-center gap-2 shadow-[0_0_20px_rgba(0,255,157,0.3)]">
                             <Play className="w-4 h-4" /> Run Swarm
                         </button>
-                    ) : status === 'completed' ? (
+                    ) : status === 'completed' || status === 'error' ? (
                         <button onClick={reset} className="px-6 py-2.5 bg-white/10 text-white font-bold rounded-xl hover:bg-white/20 flex items-center gap-2">
                             <RotateCcw className="w-4 h-4" /> Reset
                         </button>
@@ -286,6 +604,24 @@ export default function SwarmVisualizer({ onBack }) {
                 </div>
             </header>
 
+            {/* Voice Transcript */}
+            <AnimatePresence>
+                {voiceText && (
+                    <motion.div
+                        initial={{ opacity: 0, y: -10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -10 }}
+                        className="max-w-7xl mx-auto mb-4"
+                    >
+                        <div className="bg-purple-500/10 border border-purple-500/30 rounded-xl px-4 py-2 flex items-center gap-3">
+                            <Volume2 className="w-4 h-4 text-purple-400 animate-pulse" />
+                            <span className="text-sm text-purple-300">{voiceText}</span>
+                            <span className="text-[10px] text-purple-500 ml-auto">Hindi Voice Input</span>
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
             <main className="max-w-7xl mx-auto space-y-8">
 
                 {/* Pipeline Visualization */}
@@ -294,6 +630,11 @@ export default function SwarmVisualizer({ onBack }) {
                         <Network className="w-4 h-4 text-gray-400" />
                         <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Swarm Pipeline</span>
                         <span className="text-[10px] text-gray-600 ml-2">Plan → [Analyze || Verify] → Validate → Disburse</span>
+                        {selectedProfileData && (
+                            <span className="ml-auto text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded">
+                                Profile: {selectedProfileData.merchant_name}
+                            </span>
+                        )}
                     </div>
 
                     <div className="flex items-center justify-between gap-2 overflow-x-auto pb-4">
@@ -318,26 +659,31 @@ export default function SwarmVisualizer({ onBack }) {
                     {/* Agent Execution Log */}
                     <div className="lg:col-span-8">
                         <div className="glass-panel rounded-2xl border border-white/10 bg-black/60 overflow-hidden">
-                            {/* Terminal Header */}
                             <div className="flex items-center px-4 py-2.5 bg-white/5 border-b border-white/10 gap-2">
                                 <div className="w-3 h-3 rounded-full bg-red-500/80" />
                                 <div className="w-3 h-3 rounded-full bg-yellow-500/80" />
                                 <div className="w-3 h-3 rounded-full bg-green-500/80" />
-                                <span className="ml-3 text-xs font-mono text-white/40">trustai-swarm — v2.0.0</span>
+                                <span className="ml-3 text-xs font-mono text-white/40">trustai-swarm — v2.1.0</span>
                                 <div className="ml-auto flex items-center gap-2">
                                     <span className="text-[10px] text-gray-600 bg-white/5 px-2 py-0.5 rounded">MCP:paytm</span>
                                     <span className="text-[10px] text-gray-600 bg-white/5 px-2 py-0.5 rounded">agents:3</span>
+                                    <span className={`text-[10px] px-2 py-0.5 rounded ${
+                                        status === 'running' ? 'text-yellow-400 bg-yellow-400/10' :
+                                        status === 'completed' ? 'text-green-400 bg-green-400/10' :
+                                        'text-gray-600 bg-white/5'
+                                    }`}>
+                                        {status === 'running' ? 'LIVE' : status === 'completed' ? 'DONE' : 'READY'}
+                                    </span>
                                 </div>
                             </div>
 
-                            {/* Log Content */}
                             <div ref={logRef} className="p-4 h-[400px] overflow-y-auto custom-scrollbar">
                                 {logs.length === 0 && status === 'idle' && (
                                     <div className="flex items-center justify-center h-full text-gray-600">
                                         <div className="text-center">
                                             <Cpu className="w-12 h-12 mx-auto mb-3 opacity-20" />
-                                            <p className="text-sm">Click "Run Swarm" to execute the agent pipeline</p>
-                                            <p className="text-[10px] text-gray-700 mt-1">Agents will analyze, verify, and disburse in real-time</p>
+                                            <p className="text-sm">Select a merchant profile and click "Run Swarm"</p>
+                                            <p className="text-[10px] text-gray-700 mt-1">Or say "शुरू करो" with Hindi voice input</p>
                                         </div>
                                     </div>
                                 )}
@@ -360,7 +706,11 @@ export default function SwarmVisualizer({ onBack }) {
                                 <motion.div
                                     initial={{ opacity: 0, y: 20 }}
                                     animate={{ opacity: 1, y: 0 }}
-                                    className={`p-6 rounded-2xl border ${decisionBg}`}
+                                    className={`p-6 rounded-2xl border ${decisionBg} ${
+                                        result.decision === 'rejected' && result.state?.fraud_flags?.length > 0
+                                            ? 'shadow-[0_0_30px_rgba(239,68,68,0.2)]'
+                                            : ''
+                                    }`}
                                 >
                                     <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">Swarm Decision</h3>
                                     <div className={`text-3xl font-black uppercase tracking-tight mb-3 ${decisionColor}`}>
@@ -369,6 +719,23 @@ export default function SwarmVisualizer({ onBack }) {
                                     <p className="text-xs text-gray-400 leading-relaxed mb-4">
                                         {result.state?.decision_reason}
                                     </p>
+
+                                    {/* Fraud Flags */}
+                                    {result.state?.fraud_flags?.length > 0 && (
+                                        <div className="mb-4 space-y-1.5">
+                                            {result.state.fraud_flags.map((flag, i) => (
+                                                <div key={i} className={`flex items-center gap-2 text-[11px] px-2 py-1 rounded ${
+                                                    flag.severity === 'critical' ? 'bg-red-500/10 text-red-400' : 'bg-yellow-500/10 text-yellow-400'
+                                                }`}>
+                                                    <AlertTriangle className="w-3 h-3 shrink-0" />
+                                                    <span className="font-mono">{flag.type}</span>
+                                                    <span className={`text-[9px] ml-auto uppercase font-bold ${
+                                                        flag.severity === 'critical' ? 'text-red-500' : 'text-yellow-500'
+                                                    }`}>{flag.severity}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
 
                                     {/* Metrics */}
                                     <div className="space-y-2">
@@ -382,7 +749,9 @@ export default function SwarmVisualizer({ onBack }) {
                                         </div>
                                         <div className="flex justify-between text-xs">
                                             <span className="text-gray-500">Fraud Score</span>
-                                            <span className="text-yellow-400 font-mono">{result.state?.fraud_score?.toFixed(4)}</span>
+                                            <span className={`font-mono ${result.state?.fraud_score > 0.3 ? 'text-red-400 font-bold' : 'text-yellow-400'}`}>
+                                                {result.state?.fraud_score?.toFixed(4)}
+                                            </span>
                                         </div>
                                         <div className="flex justify-between text-xs border-t border-white/10 pt-2 mt-2">
                                             <span className="text-gray-400 font-bold">Composite Risk</span>
@@ -428,17 +797,57 @@ export default function SwarmVisualizer({ onBack }) {
                             )}
                         </AnimatePresence>
 
+                        {/* Benchmark Card */}
+                        <div className="p-5 rounded-2xl border border-white/10 bg-white/5">
+                            <div className="flex items-center justify-between mb-3">
+                                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2">
+                                    <Gauge className="w-4 h-4 text-cyan-400" />
+                                    Latency Benchmark
+                                </h3>
+                                <button
+                                    onClick={runBenchmark}
+                                    disabled={benchLoading}
+                                    className="text-[10px] text-cyan-400 hover:text-cyan-300 bg-cyan-500/10 px-2 py-0.5 rounded disabled:opacity-50"
+                                >
+                                    {benchLoading ? 'Running...' : 'Run (50x)'}
+                                </button>
+                            </div>
+                            {benchmark ? (
+                                <div className="grid grid-cols-3 gap-2 text-center">
+                                    <div className="bg-black/30 rounded-lg p-2">
+                                        <div className="text-[10px] text-gray-500 mb-1">p50</div>
+                                        <div className="text-sm font-mono text-green-400">{benchmark.p50_ms}ms</div>
+                                    </div>
+                                    <div className="bg-black/30 rounded-lg p-2">
+                                        <div className="text-[10px] text-gray-500 mb-1">p95</div>
+                                        <div className="text-sm font-mono text-yellow-400">{benchmark.p95_ms}ms</div>
+                                    </div>
+                                    <div className="bg-black/30 rounded-lg p-2">
+                                        <div className="text-[10px] text-gray-500 mb-1">p99</div>
+                                        <div className="text-sm font-mono text-orange-400">{benchmark.p99_ms}ms</div>
+                                    </div>
+                                    <div className="col-span-3 text-[10px] text-gray-600 mt-1">
+                                        {benchmark.runs} runs | mean: {benchmark.mean_ms}ms | stdev: {benchmark.stdev_ms}ms
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="text-[11px] text-gray-600 text-center py-2">
+                                    Click "Run" to benchmark pipeline latency
+                                </div>
+                            )}
+                        </div>
+
                         {/* Architecture Info */}
                         <div className="p-5 rounded-2xl border border-white/10 bg-white/5">
                             <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3">Architecture</h3>
                             <div className="space-y-2 text-[11px]">
                                 <div className="flex items-start gap-2">
                                     <div className="w-1.5 h-1.5 rounded-full bg-purple-400 mt-1.5 shrink-0" />
-                                    <span className="text-gray-400"><span className="text-white">Swarm Pattern:</span> Prism-inspired (Paytm, #2 Spider 2.0)</span>
+                                    <span className="text-gray-400"><span className="text-white">Swarm:</span> Prism-inspired (Paytm, #2 Spider 2.0)</span>
                                 </div>
                                 <div className="flex items-start gap-2">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-400 mt-1.5 shrink-0" />
-                                    <span className="text-gray-400"><span className="text-white">Payments:</span> Paytm MCP Server (Model Context Protocol)</span>
+                                    <span className="text-gray-400"><span className="text-white">Payments:</span> Paytm MCP (Model Context Protocol)</span>
                                 </div>
                                 <div className="flex items-start gap-2">
                                     <div className="w-1.5 h-1.5 rounded-full bg-green-400 mt-1.5 shrink-0" />
@@ -446,11 +855,14 @@ export default function SwarmVisualizer({ onBack }) {
                                 </div>
                                 <div className="flex items-start gap-2">
                                     <div className="w-1.5 h-1.5 rounded-full bg-yellow-400 mt-1.5 shrink-0" />
-                                    <span className="text-gray-400"><span className="text-white">Pipeline:</span> Plan → [Analyze ∥ Verify] → Validate → Disburse</span>
+                                    <span className="text-gray-400"><span className="text-white">Streaming:</span> WebSocket real-time logs</span>
+                                </div>
+                                <div className="flex items-start gap-2">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-red-400 mt-1.5 shrink-0" />
+                                    <span className="text-gray-400"><span className="text-white">Voice:</span> Hindi input (Web Speech API)</span>
                                 </div>
                             </div>
                         </div>
-
                     </div>
                 </div>
             </main>

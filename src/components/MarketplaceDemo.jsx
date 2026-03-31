@@ -1,16 +1,17 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ShoppingCart, CheckCircle, Truck, TrendingUp, ArrowLeft, Package, User, CreditCard } from 'lucide-react';
+import { API_BASE } from '../lib/api';
 
 export default function MarketplaceDemo({ onBack }) {
     const [view, setView] = useState('marketplace'); // 'marketplace' | 'orders' | 'profile'
 
     // Mock Data
     const products = [
-        { id: 1, name: "Urea Fertilizer", price: 600, image: "🌱" },
-        { id: 2, name: "DAP Fertilizer", price: 1350, image: "🌾" },
-        { id: 3, name: "Hybrid Seeds", price: 400, image: "🌽" },
-        { id: 4, name: "Pesticide X", price: 850, image: "🧪" }
+        { id: 1, name: "POS Terminal", price: 600, image: "💳" },
+        { id: 2, name: "Barcode Scanner", price: 1350, image: "📱" },
+        { id: 3, name: "Receipt Printer", price: 400, image: "🖨️" },
+        { id: 4, name: "Display Shelf Unit", price: 850, image: "🏪" }
     ];
 
     const [cart, setCart] = useState([]);
@@ -27,14 +28,14 @@ export default function MarketplaceDemo({ onBack }) {
         // Simulate Backend Agent Work in Background
         try {
             // We'll mimic the agent flow but show it as user-friendly status updates
-            const agentResponse = await fetch('http://localhost:8000/run-agents', {
+            const agentResponse = await fetch(`${API_BASE}/run-agents`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     item: cart[0].name, // robustify for multiple items later
                     quantity: 50, // mock quantity
                     vendor_id: "V-9988",
-                    farmer_id: "F-1024"
+                    borrower_id: "B-1024"
                 })
             });
             const data = await agentResponse.json();

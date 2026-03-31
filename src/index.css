@@ -2,96 +2,55 @@
 
 @layer base {
   :root {
-    --bg-color: #050a14;
-    --glass-bg: rgba(0, 0, 0, 0.6);
-    /* Semi-transparent white */
-    --glass-border: rgba(255, 255, 255, 0.1);
-    --glass-shimmer: rgba(255, 255, 255, 0.2);
-
-    /* Cyber Colors from prompt or aesthetic */
-    --cyber-green: #00ff9d;
-    --deep-blue: #3333e6;
-    --neon-purple: #bd00ff;
+    --bg-color: #09090b;
+    --cyber-green: #10b981;
   }
 
   body {
     background-color: var(--bg-color);
     color: white;
-    font-family: 'Inter', sans-serif;
-    /* Default, will load font */
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
     overflow-x: hidden;
   }
 }
 
-/* Glassmorphism utility */
-.glass-panel {
-  background: var(--glass-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--glass-border);
-  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
-}
-
+/* Simple card — no glass, no blur */
+.glass-panel,
 .glass-card {
-  background: var(--glass-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--glass-border);
-  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
-  transition: all 0.3s ease;
-  @apply rounded-xl p-6;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 1.5rem;
+  transition: border-color 0.2s ease;
 }
 
 .glass-card:hover {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.3);
-  transform: translateY(-5px) scale(1.02);
-  box-shadow: 0 10px 40px rgba(0, 255, 157, 0.1);
-}
-
-/* Typography utilities */
-.text-gradient {
-  background: linear-gradient(to right, #fff, #aaa);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
-.text-cyber {
-  color: var(--cyber-green);
-  text-shadow: 0 0 10px rgba(0, 255, 157, 0.5);
-}
-
-/* Animations */
-@keyframes flicker {
-
-  0%,
-  100% {
-    opacity: 1;
-  }
-
-  50% {
-    opacity: 0.8;
-  }
-}
-
-.animate-flicker {
-  animation: flicker 2s infinite;
+  border-color: rgba(255, 255, 255, 0.15);
 }
 
 /* Scrollbar */
 ::-webkit-scrollbar {
-  width: 8px;
+  width: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #000;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #333;
-  border-radius: 4px;
+  background: #27272a;
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #555;
+  background: #3f3f46;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 2px;
 }

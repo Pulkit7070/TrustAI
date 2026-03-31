@@ -1,438 +1,554 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-    ArrowLeft, Activity, Info, ShieldCheck, Zap, AlertTriangle,
-    TrendingUp, Network, Clock, DollarSign, Users, CreditCard,
-    LayoutDashboard, MousePointer2
+    ArrowLeft, Network, Layers3, Activity, ShieldCheck, AlertTriangle, RefreshCw
 } from 'lucide-react';
-import {
-    LineChart, Line, ResponsiveContainer, YAxis
-} from 'recharts';
+import { API_BASE } from '../lib/api';
+const FALLBACK_PROFILES = [
+    { id: 'approved', label: 'Strong Merchant (Approved)' },
+    { id: 'structured', label: 'Moderate Merchant (Structured)' },
+    { id: 'rejected', label: 'Risky Borrower (Rejected)' },
+    { id: 'fraud', label: 'Fraudulent Actor (Fraud Alert)' },
+];
 
-// --- Sparkline Component ---
-const Sparkline = ({ data, color = "#22c55e" }) => (
-    <div className="h-10 w-24">
-        <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={data}>
-                <Line
-                    type="monotone"
-                    dataKey="value"
-                    stroke={color}
-                    strokeWidth={2}
-                    dot={false}
-                />
-            </LineChart>
-        </ResponsiveContainer>
-    </div>
-);
+const CLUSTER_COLORS = {
+    business: '#f59e0b',
+    credit: '#22c55e',
+    customers: '#3b82f6',
+    financial: '#ef4444',
+    merchant: '#f8fafc',
+    revenue: '#a855f7',
+};
 
-const CreditReliabilityMesh = ({ onBack }) => {
-    const svgRef = useRef(null);
+const STATUS_STROKES = {
+    stable: '#22c55e',
+    neutral: '#3b82f6',
+    warning: '#f59e0b',
+    volatile: '#ef4444',
+};
+
+const money = (n) => `INR ${(n || 0).toLocaleString()}`;
+
+const pickStatus = (score) => {
+    if (score >= 0.75) return 'stable';
+    if (score >= 0.55) return 'neutral';
+    if (score >= 0.35) return 'warning';
+    return 'volatile';
+};
+
+const nodeSignal = (node, tx = {}, analysis = {}) => {
+    const margin = (tx.monthly_income || 0) > 0 ? (tx.monthly_income - tx.monthly_expense) / tx.monthly_income : 0;
+    const clusterScore = analysis.gnn_cluster_probs?.[node.cluster];
+
+    let score = clusterScore ?? 0.5;
+    let metric = 'Cluster score';
+    let value = typeof clusterScore === 'number' ? clusterScore.toFixed(4) : 'n/a';
+
+    switch (node.id) {
+        case 'merchant':
+            score = Math.min(1, ((tx.months_active || 0) / 24) * 0.5 + (analysis.gnn_confidence || 0.5) * 0.5);
+            metric = 'Merchant tenure';
+            value = `${tx.months_active || 0} months`;
+            break;
+        case 'upi_p2m':
+            score = Math.min(1, (tx.upi_monthly_count || 0) / 150);
+            metric = 'UPI count';
+            value = `${tx.upi_monthly_count || 0} tx/month`;
+            break;
+        case 'qr_dynamic':
+        case 'qr_static':
+            score = Math.min(1, (tx.qr_payments_count || 0) / 80);
+            metric = 'QR payments';
+            value = `${tx.qr_payments_count || 0} tx/month`;
+            break;
+        case 'soundbox':
+            score = tx.soundbox_active ? Math.min(1, 0.45 + (tx.soundbox_txn_count || 0) / 120) : 0.2;
+            metric = 'Soundbox';
+            value = tx.soundbox_active ? `${tx.soundbox_txn_count || 0} tx` : 'inactive';
+            break;
+        case 'settlement':
+            score = Math.min(1, (tx.settlement_amount || 0) / 500000);
+            metric = 'Settlement value';
+            value = money(tx.settlement_amount || 0);
+            break;
+        case 'cashflow':
+            score = Math.min(1, Math.max(0, (margin + 0.2) / 0.8));
+            metric = 'Income margin';
+            value = `${Math.round(margin * 100)}%`;
+            break;
+        case 'loan_history':
+            score = Math.min(1, ((tx.loans_repaid || 0) / 4) * 0.6 + (1 - (tx.default_rate || 0)) * 0.4);
+            metric = 'Loans repaid';
+            value = `${tx.loans_repaid || 0}`;
+            break;
+        case 'credit_line':
+            score = Math.max(0, 1 - (analysis.composite_risk || 0.5));
+            metric = 'Composite risk';
+            value = typeof analysis.composite_risk === 'number' ? analysis.composite_risk.toFixed(4) : 'n/a';
+            break;
+        case 'cust_regular':
+            score = Math.min(1, (tx.repeat_customers || 0) / 90);
+            metric = 'Repeat customers';
+            value = `${tx.repeat_customers || 0}`;
+            break;
+        case 'cust_new':
+            score = Math.min(1, (tx.new_customers_monthly || 0) / 30);
+            metric = 'New customers';
+            value = `${tx.new_customers_monthly || 0}`;
+            break;
+        case 'cust_high_value':
+            score = Math.min(1, (tx.avg_ticket_size || 0) / 1500);
+            metric = 'Avg ticket size';
+            value = money(tx.avg_ticket_size || 0);
+            break;
+        case 'cust_seasonal':
+            score = Math.max(0, 1 - Math.min(1, ((tx.current_month_count || 0) / Math.max(tx.avg_monthly_count || 1, 1) - 1) / 2));
+            metric = 'Seasonality ratio';
+            value = `${((tx.current_month_count || 0) / Math.max(tx.avg_monthly_count || 1, 1)).toFixed(2)}x`;
+            break;
+        case 'refunds':
+        case 'chargeback':
+            score = Math.max(0, 1 - (analysis.fraud_score || 0));
+            metric = 'Fraud pressure';
+            value = typeof analysis.fraud_score === 'number' ? analysis.fraud_score.toFixed(4) : 'n/a';
+            break;
+        case 'postpaid_usage':
+            score = Math.min(1, (tx.merchant_tier || 0) / 4);
+            metric = 'Merchant tier';
+            value = `${tx.merchant_tier || 0}`;
+            break;
+        case 'inventory':
+            score = Math.min(1, ((tx.monthly_income || 0) / Math.max((tx.monthly_expense || 1), 1)) / 2);
+            metric = 'Inventory capacity';
+            value = `${Math.max(tx.monthly_income || 0, 0)}/${Math.max(tx.monthly_expense || 0, 0)}`;
+            break;
+        case 'suppliers':
+            score = Math.min(1, (tx.unique_customers || 0) / 120);
+            metric = 'Network reach';
+            value = `${tx.unique_customers || 0} linked parties`;
+            break;
+        case 'operating_costs':
+            score = Math.max(0, 1 - Math.min(1, (tx.monthly_expense || 0) / Math.max(tx.monthly_income || 1, 1)));
+            metric = 'Expense ratio';
+            value = `${Math.round(((tx.monthly_expense || 0) / Math.max(tx.monthly_income || 1, 1)) * 100)}%`;
+            break;
+        default:
+            break;
+    }
+
+    return {
+        score: Number(score.toFixed(4)),
+        status: pickStatus(score),
+        metric,
+        value,
+        narrative: `${node.label} reflects the ${node.cluster} cluster with ${pickStatus(score)} health for this merchant profile.`,
+    };
+};
+
+export default function CreditReliabilityMesh({ onBack }) {
     const containerRef = useRef(null);
+    const svgRef = useRef(null);
+
+    const [profiles, setProfiles] = useState(FALLBACK_PROFILES);
+    const [selectedProfile, setSelectedProfile] = useState('structured');
+    const [topology, setTopology] = useState(null);
+    const [profileData, setProfileData] = useState(null);
+    const [analysis, setAnalysis] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+    const [refreshTick, setRefreshTick] = useState(0);
     const [selectedNode, setSelectedNode] = useState(null);
     const [hoveredNode, setHoveredNode] = useState(null);
-    const [hoveredEdge, setHoveredEdge] = useState(null);
     const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
-    const simulationRef = useRef(null);
 
-    // --- Enhanced Graph Data ---
-    const graphData = useMemo(() => {
-        const nodes = [];
-        const links = [];
+    useEffect(() => {
+        let ignore = false;
 
-        // 1. Center User Node
-        const userNode = {
-            id: 'user', group: 'user', label: 'USER', r: 30,
-            status: 'stable', importance: 10,
-            metrics: { score: 810, risk: "Low" }
+        fetch(`${API_BASE}/swarm/profiles`)
+            .then((r) => r.json())
+            .then((data) => {
+                if (!ignore && Array.isArray(data?.profiles) && data.profiles.length) {
+                    setProfiles(data.profiles);
+                }
+            })
+            .catch(() => {});
+
+        return () => {
+            ignore = true;
         };
-        nodes.push(userNode);
+    }, []);
 
-        // 2. Primary Nodes with Detailed Metrics
-        const primaryNodes = [
-            {
-                id: 'employer', label: 'EMPLOYER / GIG', group: 'income', status: 'stable', importance: 9,
-                metrics: { label1: "Income Consistency", val1: "82%", label2: "Avg Monthly", val2: "₹28,500", label3: "Variance", val3: "Low" },
-                trend: [{ value: 28000 }, { value: 28200 }, { value: 28500 }, { value: 28500 }]
-            },
-            {
-                id: 'upi', label: 'UPI NETWORK', group: 'payment', status: 'neutral', importance: 7,
-                metrics: { label1: "Monthly Volume", val1: "₹18,200", label2: "Recurring", val2: "64%", label3: "Volatility", val3: "Medium" },
-                trend: [{ value: 15000 }, { value: 19000 }, { value: 16000 }, { value: 18200 }]
-            },
-            {
-                id: 'rent', label: 'RENT / UTILITIES', group: 'obligation', status: 'stable', importance: 8,
-                metrics: { label1: "On-Time Rate", val1: "95%", label2: "Missed (6m)", val2: "0", label3: "Avg Payment", val3: "₹12,000" },
-                trend: [{ value: 12000 }, { value: 12000 }, { value: 12000 }, { value: 12000 }]
-            },
-            {
-                id: 'merchant', label: 'MERCHANT NETWORK', group: 'spending', status: 'volatile', importance: 8,
-                metrics: { label1: "Spending Volatility", val1: "High", label2: "Essential Ratio", val2: "72%", label3: "Spikes", val3: "2/mo" },
-                trend: [{ value: 5000 }, { value: 12000 }, { value: 6000 }, { value: 15000 }]
-            },
-            {
-                id: 'savings', label: 'SAVINGS ACCOUNT', group: 'asset', status: 'stable', importance: 7,
-                metrics: { label1: "Avg Monthly", val1: "₹3,200", label2: "Consistency", val2: "78%", label3: "Buffer", val3: "2.5 mo" },
-                trend: [{ value: 3000 }, { value: 3100 }, { value: 3000 }, { value: 3200 }]
-            },
-            {
-                id: 'p2p', label: 'P2P NETWORK', group: 'social', status: 'neutral', importance: 6,
-                metrics: { label1: "Borrowing Events", val1: "1", label2: "Transfers", val2: "Moderate", label3: "Network Risk", val3: "Low" },
-                trend: [{ value: 2 }, { value: 0 }, { value: 1 }, { value: 1 }]
-            },
-        ];
+    useEffect(() => {
+        if (!containerRef.current) return undefined;
 
-        primaryNodes.forEach(p => {
-            nodes.push({ ...p, r: 15 + p.importance, type: 'primary' });
-            links.push({
-                source: 'user', target: p.id,
-                distance: 120, strength: 0.8,
-                freq: p.importance / 2, // Edge thickness
-                stable: p.status === 'stable',
-                active: p.status === 'volatile' || p.id === 'upi', // Pulsing edges
-                metrics: { txCount: Math.floor(Math.random() * 50) + 10, avgVal: `₹${Math.floor(Math.random() * 5000) + 500}` }
+        const updateSize = () => {
+            setDimensions({
+                width: containerRef.current.clientWidth,
+                height: containerRef.current.clientHeight,
             });
+        };
+
+        updateSize();
+        const observer = new ResizeObserver(updateSize);
+        observer.observe(containerRef.current);
+        return () => observer.disconnect();
+    }, []);
+
+    useEffect(() => {
+        let ignore = false;
+        setLoading(true);
+        setError('');
+        setSelectedNode(null);
+
+        const load = async () => {
+            try {
+                const [topologyRes, profileRes] = await Promise.all([
+                    fetch(`${API_BASE}/graph/topology`),
+                    fetch(`${API_BASE}/swarm/profiles/${selectedProfile}`),
+                ]);
+
+                const topologyData = await topologyRes.json();
+                const profile = await profileRes.json();
+
+                if (!topologyRes.ok) throw new Error('Could not load graph topology');
+                if (!profileRes.ok) throw new Error('Could not load merchant profile');
+
+                const analysisRes = await fetch(`${API_BASE}/swarm/analyze`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        merchant_id: profile.merchant_id,
+                        loan_amount: profile.loan_amount,
+                        items: profile.items,
+                        transaction_data: profile.transaction_data,
+                    }),
+                });
+                const analysisData = await analysisRes.json();
+                if (!analysisRes.ok) throw new Error('Could not load graph signals');
+
+                if (!ignore) {
+                    setTopology(topologyData);
+                    setProfileData(profile);
+                    setAnalysis(analysisData);
+                }
+            } catch (err) {
+                if (!ignore) {
+                    setTopology(null);
+                    setProfileData(null);
+                    setAnalysis(null);
+                    setError(err.message || 'Backend unavailable');
+                }
+            } finally {
+                if (!ignore) setLoading(false);
+            }
+        };
+
+        load();
+        return () => {
+            ignore = true;
+        };
+    }, [selectedProfile, refreshTick]);
+
+    const graphData = useMemo(() => {
+        if (!topology) return { nodes: [], links: [] };
+
+        const tx = profileData?.transaction_data || {};
+        const nodes = topology.nodes.map((node) => {
+            const signal = nodeSignal(node, tx, analysis || {});
+            return {
+                ...node,
+                ...signal,
+                radius: node.id === 'merchant' ? 24 : 10 + signal.score * 10,
+            };
         });
 
-        // 3. Secondary Nodes (Clusters) - Visual clutter reduction: smaller, less detail
-        const clusters = {
-            employer: [{ id: 'inc_stable', label: 'Salary', status: 'stable' }, { id: 'inc_var', label: 'Bonus', status: 'neutral' }],
-            upi: [{ id: 'bill', label: 'Bills', status: 'stable' }, { id: 'groceries', label: 'Store', status: 'neutral' }],
-            merchant: [{ id: 'lux', label: 'Luxury', status: 'volatile' }, { id: 'subs', label: 'Subs', status: 'stable' }],
-            savings: [{ id: 'rd', label: 'FD', status: 'stable' }]
-        };
-
-        Object.entries(clusters).forEach(([pid, kids]) => {
-            kids.forEach(k => {
-                nodes.push({ ...k, group: pid, r: 8, type: 'secondary', importance: 3 });
-                links.push({ source: pid, target: k.id, distance: 40, strength: 0.5, freq: 1, stable: true });
-            });
+        const nodeMap = Object.fromEntries(nodes.map((node) => [node.id, node]));
+        const links = topology.edges.map((edge) => {
+            const sourceScore = nodeMap[edge.source]?.score || 0.5;
+            const targetScore = nodeMap[edge.target]?.score || 0.5;
+            return {
+                ...edge,
+                strength: (sourceScore + targetScore) / 2,
+            };
         });
 
         return { nodes, links };
-    }, []);
-
-    // --- D3 Simulation ---
-    useEffect(() => {
-        if (!containerRef.current) return;
-        setDimensions({ width: containerRef.current.clientWidth, height: containerRef.current.clientHeight });
-    }, []);
+    }, [topology, profileData, analysis]);
 
     useEffect(() => {
-        if (!svgRef.current || dimensions.width === 0) return;
+        if (!svgRef.current || !dimensions.width || !graphData.nodes.length) return undefined;
 
-        const { nodes, links } = graphData;
         const width = dimensions.width;
         const height = dimensions.height;
-
-        const simulation = d3.forceSimulation(nodes)
-            .force("link", d3.forceLink(links).id(d => d.id).distance(d => d.distance || 60))
-            .force("charge", d3.forceManyBody().strength(-400))
-            .force("center", d3.forceCenter(width / 2, height / 2))
-            .force("collide", d3.forceCollide().radius(d => d.r + 15).strength(0.8))
-            .force("radial", d3.forceRadial(d => d.group === 'user' ? 0 : d.type === 'primary' ? 140 : 220, width / 2, height / 2).strength(0.15));
-
-        simulationRef.current = simulation;
+        const nodes = graphData.nodes.map((node) => ({ ...node }));
+        const links = graphData.links.map((link) => ({ ...link }));
 
         const svg = d3.select(svgRef.current);
-        svg.selectAll("*").remove();
+        svg.selectAll('*').remove();
 
-        // -- Defs for Glows --
-        const defs = svg.append("defs");
-        const createGlow = (color, id) => {
-            const filter = defs.append("filter").attr("id", id).attr("x", "-50%").attr("y", "-50%").attr("width", "200%").attr("height", "200%");
-            filter.append("feGaussianBlur").attr("stdDeviation", "4").attr("result", "coloredBlur");
-            const merge = filter.append("feMerge");
-            merge.append("feMergeNode").attr("in", "coloredBlur");
-            merge.append("feMergeNode").attr("in", "SourceGraphic");
-        };
-        createGlow("#22c55e", "glow-green");
-        createGlow("#ef4444", "glow-red");
-        createGlow("#3b82f6", "glow-blue");
-        createGlow("#eab308", "glow-yellow");
+        const simulation = d3.forceSimulation(nodes)
+            .force('link', d3.forceLink(links).id((d) => d.id).distance((d) => d.source.id === 'merchant' || d.target.id === 'merchant' ? 110 : 65))
+            .force('charge', d3.forceManyBody().strength(-240))
+            .force('collide', d3.forceCollide().radius((d) => d.radius + 14))
+            .force('center', d3.forceCenter(width / 2, height / 2))
+            .force('radial', d3.forceRadial((d) => d.id === 'merchant' ? 0 : d.cluster === 'merchant' ? 40 : 170, width / 2, height / 2).strength(0.2));
 
-        // -- Links --
-        const link = svg.append("g")
-            .attr("stroke-linecap", "round")
-            .selectAll("line")
+        const link = svg.append('g')
+            .attr('stroke-linecap', 'round')
+            .selectAll('line')
             .data(links)
-            .join("line")
-            .attr("stroke", d => d.stable ? "#22c55e" : "#ef4444")
-            .attr("stroke-opacity", d => d.active ? 0.6 : 0.2)
-            .attr("stroke-width", d => d.freq * 1.5)
-            .attr("class", d => d.active ? "animate-pulse-fast" : "")
-            .on("mouseenter", (e, d) => setHoveredEdge({ ...d, x: e.clientX, y: e.clientY }))
-            .on("mouseleave", () => setHoveredEdge(null));
+            .join('line')
+            .attr('stroke', '#334155')
+            .attr('stroke-opacity', (d) => 0.18 + d.strength * 0.45)
+            .attr('stroke-width', (d) => 1 + d.strength * 2);
 
-        // -- Link Pulse Animation (CSS override injection for D3 elements) --
-        svg.append("style").text(`
-            @keyframes pulse-link { 0% { opacity: 0.2; } 50% { opacity: 0.7; } 100% { opacity: 0.2; } }
-            .animate-pulse-fast { animation: pulse-link 2s infinite; }
-        `);
-
-        // -- Nodes --
-        const node = svg.append("g")
-            .selectAll("g")
+        const node = svg.append('g')
+            .selectAll('g')
             .data(nodes)
-            .join("g")
-            .attr("cursor", "pointer")
-            .call(d3.drag()
-                .on("start", dragstarted)
-                .on("drag", dragged)
-                .on("end", dragended))
-            .on("mouseenter", (e, d) => setHoveredNode({ ...d, x: d.x, y: d.y })) // Use d.x/y for better stability or e.client for mouse
-            .on("mouseleave", () => setHoveredNode(null))
-            .on("click", (e, d) => { e.stopPropagation(); setSelectedNode(d); });
+            .join('g')
+            .attr('cursor', 'pointer')
+            .call(
+                d3.drag()
+                    .on('start', (event, d) => {
+                        if (!event.active) simulation.alphaTarget(0.3).restart();
+                        d.fx = d.x;
+                        d.fy = d.y;
+                    })
+                    .on('drag', (event, d) => {
+                        d.fx = event.x;
+                        d.fy = event.y;
+                    })
+                    .on('end', (event, d) => {
+                        if (!event.active) simulation.alphaTarget(0);
+                        d.fx = null;
+                        d.fy = null;
+                    })
+            )
+            .on('mouseenter', (event, d) => {
+                setHoveredNode({ ...d, x: event.clientX, y: event.clientY });
+            })
+            .on('mouseleave', () => setHoveredNode(null))
+            .on('click', (_, d) => setSelectedNode(d));
 
-        // Node Circles
-        node.append("circle")
-            .attr("r", d => d.r)
-            .attr("fill", d => getNodeColor(d))
-            .attr("stroke", "#fff")
-            .attr("stroke-width", d => d.id === 'user' ? 3 : 1.5)
-            .style("filter", d => {
-                if (d.status === 'stable') return "url(#glow-green)";
-                if (d.status === 'volatile') return "url(#glow-red)";
-                if (d.status === 'warning') return "url(#glow-yellow)";
-                return "url(#glow-blue)";
-            });
+        node.append('circle')
+            .attr('r', (d) => d.radius)
+            .attr('fill', (d) => CLUSTER_COLORS[d.cluster] || '#94a3b8')
+            .attr('fill-opacity', (d) => d.id === 'merchant' ? 0.9 : 0.7)
+            .attr('stroke', (d) => STATUS_STROKES[d.status])
+            .attr('stroke-width', (d) => d.id === 'merchant' ? 4 : 2);
 
-        // Icons for Primary Nodes
-        node.filter(d => d.type === 'primary').append("foreignObject")
-            .attr("width", 20).attr("height", 20)
-            .attr("x", -10).attr("y", -10)
-            .style("pointer-events", "none")
-            .append("xhtml:div")
-            .attr("class", "flex items-center justify-center h-full text-white/80")
-            .html(d => `<i data-lucide="${getIconName(d.group)}" width="16" height="16"></i>`);
+        node.append('text')
+            .text((d) => d.label.replace(/_/g, ' '))
+            .attr('dy', (d) => d.radius + 13)
+            .attr('text-anchor', 'middle')
+            .attr('fill', '#cbd5e1')
+            .attr('font-size', (d) => d.id === 'merchant' ? '11px' : '9px')
+            .style('pointer-events', 'none');
 
-        // Labels
-        node.append("text")
-            .text(d => d.label)
-            .attr("dy", d => d.r + 15)
-            .attr("text-anchor", "middle")
-            .attr("fill", "#e2e8f0")
-            .attr("font-size", d => d.id === 'user' ? "12px" : "10px")
-            .attr("font-weight", d => d.id === 'user' ? "bold" : "500")
-            .style("pointer-events", "none")
-            .style("text-shadow", "0 2px 4px rgba(0,0,0,0.8)");
-
-        // Tick
-        simulation.on("tick", () => {
+        simulation.on('tick', () => {
             link
-                .attr("x1", d => d.source.x)
-                .attr("y1", d => d.source.y)
-                .attr("x2", d => d.target.x)
-                .attr("y2", d => d.target.y);
+                .attr('x1', (d) => d.source.x)
+                .attr('y1', (d) => d.source.y)
+                .attr('x2', (d) => d.target.x)
+                .attr('y2', (d) => d.target.y);
 
-            node.attr("transform", d => `translate(${d.x},${d.y})`);
+            node.attr('transform', (d) => `translate(${d.x},${d.y})`);
         });
 
-        // Drag Handlers
-        function dragstarted(event, d) {
-            if (!event.active) simulation.alphaTarget(0.3).restart();
-            d.fx = d.x;
-            d.fy = d.y;
-            setSelectedNode(d);
-        }
-        function dragged(event, d) { d.fx = event.x; d.fy = event.y; }
-        function dragended(event, d) {
-            if (!event.active) simulation.alphaTarget(0);
-            d.fx = null; d.fy = null;
-        }
+        return () => simulation.stop();
+    }, [graphData, dimensions]);
 
-        // Click BG to deselect
-        svg.on("click", () => setSelectedNode(null));
-
-    }, [dimensions, graphData]);
-
-    // Update Lucide icons inside D3
-    useEffect(() => {
-        // Simple hack to render icons if needed, but we used text/svg above. 
-        // Providing SVGs directly in D3 is harder with lucide-react, so we often omit or use simple paths.
-        // For this demo, let's keep circles clean.
-    }, []);
-
-    const getNodeColor = (d) => {
-        if (d.id === 'user') return '#fbbf24';
-        switch (d.status) {
-            case 'stable': return '#22c55e';
-            case 'volatile': return '#ef4444';
-            case 'warning': return '#eab308';
-            default: return '#3b82f6';
-        }
-    };
-
-    const getIconName = (group) => {
-        switch (group) {
-            case 'income': return 'briefcase';
-            case 'payment': return 'zap';
-            case 'obligation': return 'home';
-            case 'spending': return 'shopping-cart';
-            case 'asset': return 'piggy-bank';
-            default: return 'circle';
-        }
-    };
+    const selectedSummary = selectedNode || graphData.nodes.find((node) => node.id === 'merchant');
+    const topFeatures = (analysis?.feature_importance || []).slice(0, 4);
 
     return (
         <div className="fixed inset-0 z-50 bg-[#0B0E14] text-white font-sans flex flex-col overflow-hidden selection:bg-cyan-500/30">
-
-            {/* Ambient Background */}
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-indigo-900/10 via-[#0B0E14] to-[#0B0E14] pointer-events-none" />
-
-            {/* Header & Stats Bar */}
-            <header className="relative z-20 px-6 py-4 flex flex-col gap-4 border-b border-white/5 bg-[#0B0E14]/80 backdrop-blur-md">
-                <div className="flex items-center justify-between">
+            <header className="relative z-20 px-6 py-4 border-b border-white/5 bg-[#0B0E14]/80 backdrop-blur-md">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                     <div className="flex items-center gap-4">
                         <button onClick={onBack} className="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-gray-400 hover:text-white">
                             <ArrowLeft className="w-5 h-5" />
                         </button>
-                        <h1 className="text-xl font-bold flex items-center gap-2 tracking-tight">
-                            <Network className="w-5 h-5 text-cyan-400" />
-                            Credit Mesh <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 tracking-wider">BETA</span>
-                        </h1>
+                        <div>
+                            <h1 className="text-xl font-bold flex items-center gap-2 tracking-tight">
+                                <Network className="w-5 h-5 text-cyan-400" />
+                                Credit Mesh
+                            </h1>
+                            <p className="text-xs text-gray-500">Live 21-node merchant graph from /graph/topology</p>
+                        </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                        {profiles.map((profile) => (
+                            <button
+                                key={profile.id}
+                                onClick={() => setSelectedProfile(profile.id)}
+                                className={`px-3 py-2 rounded-xl text-xs font-bold border transition-colors ${
+                                    selectedProfile === profile.id ? 'border-cyan-400 bg-cyan-500/10 text-cyan-300' : 'border-white/10 bg-white/5 text-gray-400 hover:text-white'
+                                }`}
+                            >
+                                {profile.label}
+                            </button>
+                        ))}
+                        <button
+                            onClick={() => setRefreshTick((tick) => tick + 1)}
+                            className="px-3 py-2 rounded-xl text-xs font-bold border border-white/10 bg-white/5 text-gray-300 hover:bg-white/10 flex items-center gap-2"
+                        >
+                            <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+                            Refresh
+                        </button>
                     </div>
                 </div>
-
-                {/* Top Summary Bar Removed */}
             </header>
 
-            {/* Main Viz Container */}
-            <div className="flex-1 flex relative overflow-hidden" ref={containerRef}>
-                <svg ref={svgRef} className="w-full h-full cursor-move active:cursor-grabbing" style={{ width: '100%', height: '100%' }} />
+            <div className="flex-1 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] overflow-hidden">
+                <div className="relative" ref={containerRef}>
+                    <div className="absolute inset-x-6 top-6 z-10 grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div className="rounded-2xl border border-white/10 bg-black/50 backdrop-blur-md p-4">
+                            <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-2">Nodes</div>
+                            <div className="text-2xl font-bold text-white">{graphData.nodes.length}</div>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-black/50 backdrop-blur-md p-4">
+                            <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-2">Edges</div>
+                            <div className="text-2xl font-bold text-white">{graphData.links.length}</div>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-black/50 backdrop-blur-md p-4">
+                            <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-2">Decision</div>
+                            <div className={`text-lg font-bold ${analysis?.decision === 'approved' ? 'text-green-400' : analysis?.decision === 'structured' ? 'text-yellow-400' : 'text-red-400'}`}>
+                                {(analysis?.decision || 'n/a').toUpperCase()}
+                            </div>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-black/50 backdrop-blur-md p-4">
+                            <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-2">Composite Risk</div>
+                            <div className="text-2xl font-bold text-cyan-400">{typeof analysis?.composite_risk === 'number' ? analysis.composite_risk.toFixed(4) : '--'}</div>
+                        </div>
+                    </div>
 
-                {/* Node Tooltip */}
-                <AnimatePresence>
-                    {hoveredNode && hoveredNode.type === 'primary' && !selectedNode && (
-                        <motion.div
-                            initial={{ opacity: 0, scale: 0.9 }}
-                            animate={{ opacity: 1, scale: 1 }}
-                            exit={{ opacity: 0, scale: 0.9 }}
-                            style={{ left: dimensions.width / 2 + hoveredNode.x / 2 /* Rough positioning logic can be improved */, top: hoveredNode.y }}
-                        // In real d3 app, we'd translate d.x/d.y to screen coords. For now let's use fixed corner capability or follow mouse.
-                        // Let's use customized floating based on mouse for reliability
-                        /> // Placeholder, implemented below in a better way
+                    <svg ref={svgRef} className="w-full h-full" />
+
+                    {hoveredNode && (
+                        <div
+                            className="absolute pointer-events-none z-40 -translate-x-1/2 -translate-y-full"
+                            style={{ left: hoveredNode.x, top: hoveredNode.y - 12 }}
+                        >
+                            <div className="bg-black/90 backdrop-blur-xl border border-white/10 rounded-xl p-3 shadow-2xl w-56">
+                                <div className="flex items-center justify-between mb-2">
+                                    <span className="text-xs font-bold text-white">{hoveredNode.label}</span>
+                                    <span className={`text-[10px] uppercase font-bold`} style={{ color: STATUS_STROKES[hoveredNode.status] }}>
+                                        {hoveredNode.status}
+                                    </span>
+                                </div>
+                                <div className="text-[11px] text-gray-400 mb-1">{hoveredNode.cluster} cluster</div>
+                                <div className="text-[11px] text-gray-300">{hoveredNode.metric}: {hoveredNode.value}</div>
+                            </div>
+                        </div>
                     )}
-                </AnimatePresence>
 
-                {/* Render Tooltip explicitly using state coords */}
-                {hoveredNode && hoveredNode.metrics && !selectedNode && (
-                    <div
-                        className="absolute pointer-events-none z-40 transform -translate-x-1/2 -translate-y-[120%]"
-                        style={{ left: dimensions.width / 2 + (hoveredNode.x - dimensions.width / 2) * 1 /* Zoom factor if applied */, top: dimensions.height / 2 + (hoveredNode.y - dimensions.height / 2) * 1 }}
-                    >
-                        <motion.div
-                            initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }}
-                            className="bg-[#151921]/90 backdrop-blur-xl border border-white/10 rounded-xl p-3 shadow-2xl w-48"
-                        >
-                            <div className="flex items-center gap-2 mb-2 pb-2 border-b border-white/10">
-                                <div className={`w-2 h-2 rounded-full ${hoveredNode.status === 'stable' ? 'bg-green-500' : 'bg-red-500'}`} />
-                                <span className="text-xs font-bold text-gray-200">{hoveredNode.label}</span>
+                    {(loading || error) && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+                            <div className={`text-sm ${error ? 'text-red-400' : 'text-gray-300'}`}>
+                                {error || 'Loading graph topology...'}
                             </div>
-                            <div className="space-y-1.5">
-                                {Object.entries(hoveredNode.metrics).map(([k, v], i) => (
-                                    k.startsWith('val') ? null :
-                                        <div key={i} className="flex justify-between text-[10px]">
-                                            <span className="text-gray-500">{v}</span>
-                                            <span className="text-gray-300 font-mono">
-                                                {hoveredNode.metrics[`val${k.replace('label', '')}`]}
-                                            </span>
-                                        </div>
-                                ))}
-                            </div>
-                        </motion.div>
+                        </div>
+                    )}
+                </div>
+
+                <aside className="border-l border-white/5 bg-black/40 backdrop-blur-xl p-6 overflow-y-auto">
+                    <div className="mb-6">
+                        <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-2">Merchant Profile</div>
+                        <div className="text-xl font-bold text-white">{profileData?.merchant_name || 'Loading...'}</div>
+                        <div className="text-sm text-gray-500 mt-1">{money(profileData?.loan_amount)} request</div>
                     </div>
-                )}
 
-                {/* Edge Tooltip */}
-                {hoveredEdge && !selectedNode && (
-                    <div
-                        className="absolute pointer-events-none z-40"
-                        style={{ left: hoveredEdge.x, top: hoveredEdge.y }}
-                    >
-                        <motion.div
-                            initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-                            className="bg-black/80 backdrop-blur text-xs rounded px-2 py-1 border border-white/10 transform -translate-y-full"
-                        >
-                            Tx Count: <span className="text-cyan-400">{hoveredEdge.metrics?.txCount}</span>
-                        </motion.div>
-                    </div>
-                )}
-
-
-                {/* Side Panel */}
-                <AnimatePresence>
-                    {selectedNode && (
-                        <motion.div
-                            initial={{ x: 400, opacity: 0 }}
-                            animate={{ x: 0, opacity: 1 }}
-                            exit={{ x: 400, opacity: 0 }}
-                            transition={{ type: "spring", stiffness: 300, damping: 30 }}
-                            className="absolute top-4 right-4 bottom-4 w-80 md:w-96 bg-[#151921]/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl overflow-y-auto custom-scrollbar p-6 z-30"
-                        >
-                            <div className="flex items-start justify-between mb-6">
-                                <div>
-                                    <h2 className="text-lg font-bold text-white mb-1">{selectedNode.label}</h2>
-                                    <div className={`text-[10px] inline-flex items-center px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${selectedNode.status === 'stable' ? 'bg-green-500/20 text-green-400' :
-                                        selectedNode.status === 'volatile' ? 'bg-red-500/20 text-red-400' :
-                                            'bg-blue-500/20 text-blue-400'
-                                        }`}>
-                                        {selectedNode.status} Signal
+                    {selectedSummary && (
+                        <AnimatePresence mode="wait">
+                            <motion.div
+                                key={selectedSummary.id}
+                                initial={{ opacity: 0, x: 20 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                exit={{ opacity: 0, x: 20 }}
+                                className="rounded-2xl border border-white/10 bg-white/5 p-5 mb-6"
+                            >
+                                <div className="flex items-start justify-between mb-4">
+                                    <div>
+                                        <div className="text-lg font-bold text-white">{selectedSummary.label}</div>
+                                        <div className="text-[11px] text-gray-500 uppercase tracking-widest mt-1">{selectedSummary.cluster}</div>
+                                    </div>
+                                    <div className={`text-[10px] uppercase font-bold px-2 py-1 rounded`} style={{ backgroundColor: `${STATUS_STROKES[selectedSummary.status]}22`, color: STATUS_STROKES[selectedSummary.status] }}>
+                                        {selectedSummary.status}
                                     </div>
                                 </div>
-                                <button className="p-1 hover:bg-white/10 rounded flex items-center justify-center transition-colors" onClick={() => setSelectedNode(null)}>
-                                    <ArrowLeft className="w-5 h-5 text-gray-500 rotate-180" />
-                                </button>
-                            </div>
 
-                            {/* Detailed Metrics */}
-                            <div className="space-y-6">
-
-                                {selectedNode.trend && (
-                                    <div className="p-4 bg-white/5 rounded-xl border border-white/5">
-                                        <div className="flex items-center justify-between mb-2">
-                                            <span className="text-xs text-gray-400 uppercase tracking-wider">3-Month Trend</span>
-                                            <TrendingUp className="w-3.5 h-3.5 text-green-400" />
-                                        </div>
-                                        <Sparkline data={selectedNode.trend} color={selectedNode.status === 'volatile' ? '#ef4444' : '#22c55e'} />
+                                <div className="grid grid-cols-2 gap-3 mb-4">
+                                    <div className="rounded-xl bg-black/40 p-3 border border-white/5">
+                                        <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Signal</div>
+                                        <div className="text-xl font-bold text-white">{selectedSummary.score.toFixed(4)}</div>
                                     </div>
-                                )}
-
-                                <div className="grid grid-cols-2 gap-3">
-                                    {selectedNode.metrics && Object.entries(selectedNode.metrics).map(([k, v], i) => (
-                                        k.startsWith('val') ? null :
-                                            <div key={i} className="bg-black/20 p-3 rounded-lg border border-white/5">
-                                                <div className="text-[10px] text-gray-500 mb-1">{v}</div>
-                                                <div className="text-sm font-bold text-gray-200">
-                                                    {selectedNode.metrics[`val${k.replace('label', '')}`]}
-                                                </div>
-                                            </div>
-                                    ))}
+                                    <div className="rounded-xl bg-black/40 p-3 border border-white/5">
+                                        <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">{selectedSummary.metric}</div>
+                                        <div className="text-sm font-semibold text-cyan-400">{selectedSummary.value}</div>
+                                    </div>
                                 </div>
 
-                                <div className="p-4 bg-white/5 rounded-xl border border-white/5">
-                                    <h3 className="text-sm font-semibold text-gray-300 mb-2 flex items-center gap-2">
-                                        <Info className="w-4 h-4 text-cyan-400" />
-                                        Behavioral Insight
-                                    </h3>
-                                    <p className="text-xs text-gray-400 leading-relaxed">
-                                        {selectedNode.status === 'stable'
-                                            ? "Consistently positive signal. This node contributes +12 points to the overall credit reliability score."
-                                            : selectedNode.status === 'volatile'
-                                                ? "Detected irregular patterns in the last 30 days. High variance suggests potential liquidity stress."
-                                                : "Neutral behavior observed. No significant impact on risk model currently."}
-                                    </p>
-                                </div>
-
-                            </div>
-                        </motion.div>
+                                <p className="text-sm text-gray-400 leading-relaxed">{selectedSummary.narrative}</p>
+                            </motion.div>
+                        </AnimatePresence>
                     )}
-                </AnimatePresence>
 
+                    <div className="rounded-2xl border border-white/10 bg-white/5 p-5 mb-6">
+                        <div className="flex items-center gap-2 mb-4">
+                            <Layers3 className="w-4 h-4 text-cyan-400" />
+                            <div className="text-xs font-bold text-gray-400 uppercase tracking-widest">Cluster Legend</div>
+                        </div>
+                        <div className="space-y-2">
+                            {Object.entries(CLUSTER_COLORS).map(([cluster, color]) => (
+                                <div key={cluster} className="flex items-center justify-between text-sm">
+                                    <div className="flex items-center gap-2">
+                                        <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
+                                        <span className="text-gray-300 capitalize">{cluster}</span>
+                                    </div>
+                                    <span className="text-gray-500">{graphData.nodes.filter((node) => node.cluster === cluster).length}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-white/10 bg-white/5 p-5 mb-6">
+                        <div className="flex items-center gap-2 mb-4">
+                            <Activity className="w-4 h-4 text-purple-400" />
+                            <div className="text-xs font-bold text-gray-400 uppercase tracking-widest">Top Drivers</div>
+                        </div>
+                        <div className="space-y-3">
+                            {topFeatures.map((feature) => (
+                                <div key={feature.name} className="flex items-center justify-between text-sm">
+                                    <span className="text-gray-300">{feature.name}</span>
+                                    <span className={feature.value >= 0 ? 'text-green-400 font-mono' : 'text-red-400 font-mono'}>
+                                        {feature.value.toFixed(4)}
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+                        <div className="flex items-center gap-2 mb-4">
+                            <ShieldCheck className="w-4 h-4 text-green-400" />
+                            <div className="text-xs font-bold text-gray-400 uppercase tracking-widest">Fraud Flags</div>
+                        </div>
+                        <div className="space-y-2">
+                            {(analysis?.fraud_flags?.length ? analysis.fraud_flags : [{ type: 'none', severity: 'stable' }]).map((flag) => (
+                                <div key={flag.type} className={`flex items-center gap-2 text-[11px] px-2 py-2 rounded ${
+                                    flag.severity === 'critical' ? 'bg-red-500/10 text-red-400' : flag.type === 'none' ? 'bg-green-500/10 text-green-400' : 'bg-yellow-500/10 text-yellow-400'
+                                }`}>
+                                    {flag.severity === 'critical' ? <AlertTriangle className="w-3 h-3 shrink-0" /> : <ShieldCheck className="w-3 h-3 shrink-0" />}
+                                    <span className="font-mono">{flag.type}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </aside>
             </div>
         </div>
     );
 }
-
-export default CreditReliabilityMesh;
