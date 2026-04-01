@@ -29,12 +29,12 @@ class PurposePayTasks:
             agent=agent
         )
 
-    def recover_loan_task(self, agent, farmer_id):
+    def recover_loan_task(self, agent, borrower_id):
         return Task(
             description=dedent(f"""
-                Monitor the marketplace for sales by Farmer {farmer_id}.
-                Use the 'Harvest Sale Listener' tool.
-                If a sale occurs, deduct the loan amount + interest immediately.
+                Monitor revenue streams for Borrower {borrower_id}.
+                Use the 'Revenue Sale Listener' tool.
+                If a revenue event occurs, deduct the loan amount + interest immediately.
             """),
             expected_output=dedent("""
                 A final settlement statement showing Total Sale, Deductions, and Net Profit.

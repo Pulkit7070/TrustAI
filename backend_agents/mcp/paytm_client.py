@@ -119,7 +119,7 @@ class PaytmMCPClient:
         """
         MCP Tool: paytm_create_subscription
 
-        Sets up auto-deduction for loan repayment linked to harvest cycles.
+        Sets up auto-deduction for loan repayment linked to repayment cycles.
         """
         tool_call = MCPToolCall(
             tool_name="paytm_create_subscription",
@@ -244,7 +244,7 @@ class PaytmMCPClient:
             "customer_id": customer_id,
             "amount": str(amount),
             "frequency": tool_call.arguments.get("frequency", "MONTHLY"),
-            "next_deduction_date": "auto_on_harvest_sale",
+            "next_deduction_date": "auto_on_next_cycle",
             "mandate_type": "UPI_AUTOPAY",
         }
         result = MCPToolResult(

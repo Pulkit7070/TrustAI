@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
+import numpy as np
+
 
 class AgentRole(str, Enum):
     PLANNER = "planner"
@@ -63,8 +65,8 @@ class SwarmState:
     transaction_data: dict = field(default_factory=dict)
     loan_amount: float = 0.0
     items: list = field(default_factory=list)
-    farmer_id: str = ""
-    farmer_name: str = ""
+    borrower_id: str = ""
+    borrower_name: str = ""
 
     # Agent outputs
     gnn_score: Optional[float] = None
@@ -80,6 +82,9 @@ class SwarmState:
     payment_txn_id: Optional[str] = None
     mcp_response: Optional[dict] = None
 
+    # Explainability (SHAP-like feature attribution)
+    feature_importance: list = field(default_factory=list)
+
     # Final decision
     decision: Optional[str] = None  # "approved" | "rejected" | "structured"
     decision_reason: str = ""
@@ -88,6 +93,9 @@ class SwarmState:
     # Execution log
     logs: list = field(default_factory=list)
     total_latency_ms: float = 0.0
+
+    # Optional streaming callback for WebSocket
+    _on_log: Any = None
 
     def log(self, agent: str, action: str, detail: str, latency_ms: float = 0.0):
         entry = SwarmLog(
@@ -98,14 +106,20 @@ class SwarmState:
             latency_ms=latency_ms,
         )
         self.logs.append(entry)
+        # Stream to WebSocket if callback is set
+        if self._on_log:
+            try:
+                self._on_log(entry.to_dict())
+            except Exception:
+                pass
 
     def to_dict(self):
         return {
             "request_id": self.request_id,
             "merchant_id": self.merchant_id,
             "merchant_name": self.merchant_name,
-            "farmer_id": self.farmer_id,
-            "farmer_name": self.farmer_name,
+            "borrower_id": self.borrower_id,
+            "borrower_name": self.borrower_name,
             "loan_amount": self.loan_amount,
             "items": self.items,
             "gnn_score": self.gnn_score,
@@ -119,6 +133,7 @@ class SwarmState:
             "price_details": self.price_details,
             "payment_status": self.payment_status,
             "payment_txn_id": self.payment_txn_id,
+            "feature_importance": self.feature_importance,
             "decision": self.decision,
             "decision_reason": self.decision_reason,
             "composite_risk": self.composite_risk,
@@ -251,8 +266,8 @@ class SwarmEngine:
 
         Decision matrix:
           - composite_risk < 0.3  → approved (direct)
-          - composite_risk < 0.6  → structured (supply-based financing)
-          - composite_risk >= 0.6 → rejected
+          - composite_risk < 0.55 → structured (supply-based financing)
+          - composite_risk >= 0.55 → rejected
           - Any critical fraud flags → rejected immediately
         """
         # Check for critical fraud
@@ -281,7 +296,7 @@ class SwarmEngine:
         if composite < 0.3:
             state.decision = "approved"
             state.decision_reason = f"Low risk ({composite:.2f}). Strong relational stability and behavioral consistency."
-        elif composite < 0.6:
+        elif composite < 0.55:
             state.decision = "structured"
             state.decision_reason = (
                 f"Moderate risk ({composite:.2f}). Recommending structured supply financing "
@@ -294,7 +309,28 @@ class SwarmEngine:
         state.log(
             "VALIDATOR",
             "RISK_COMPUTED",
-            f"GNN={gnn_risk:.2f} TCN={tcn_risk:.2f} Fraud={fraud_risk:.2f} → Composite={composite:.2f} → {state.decision}",
+            f"GNN={gnn_risk:.2f} TCN={tcn_risk:.2f} Fraud={fraud_risk:.2f} -> Composite={composite:.2f} -> {state.decision}",
         )
+
+        # Feature importance fallback (only when GNN gradient attribution unavailable)
+        if not state.feature_importance and state.transaction_data:
+            tx = state.transaction_data
+            monthly_income = tx.get("monthly_income", 15000)
+            monthly_expense = tx.get("monthly_expense", 12000)
+            savings_ratio = (monthly_income - monthly_expense) / (monthly_income + 1e-6)
+            weekly = tx.get("weekly_data", [])
+            income_stability = 1.0 - (np.std([w.get("income", 4000) for w in weekly]) / (np.mean([w.get("income", 4000) for w in weekly]) + 1e-6)) if weekly else 0.5
+
+            state.feature_importance = [
+                {"name": "Income Stability", "value": round(income_stability * 0.18, 4)},
+                {"name": "Savings Discipline", "value": round(savings_ratio * 0.15, 4)},
+                {"name": "UPI Transaction Volume", "value": round(min(tx.get("upi_monthly_count", 0) / 100, 1.0) * 0.12, 4)},
+                {"name": "Customer Diversity", "value": round(min(tx.get("unique_customers", 0) / 100, 1.0) * 0.09, 4)},
+                {"name": "Merchant Tenure", "value": round(min(tx.get("months_active", 0) / 24, 1.0) * 0.08, 4)},
+                {"name": "Repayment History", "value": round(min(tx.get("loans_repaid", 0) / 3, 1.0) * 0.07, 4)},
+                {"name": "Spending Volatility", "value": round(-0.04 - fraud_risk * 0.03, 4)},
+                {"name": "P2P Asymmetry", "value": round(-min(tx.get("p2p_sent_monthly", 0) / (tx.get("p2p_received_monthly", 1) + 1e-6), 1.0) * 0.05, 4)},
+            ]
+            state.feature_importance.sort(key=lambda x: x["value"], reverse=True)
 
         return state

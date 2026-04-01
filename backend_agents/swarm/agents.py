@@ -21,9 +21,10 @@ class AnalystAgent:
       3. Generate feature importance (SHAP-style) for explainability
     """
 
-    def __init__(self, gnn_model=None, tcn_model=None):
+    def __init__(self, gnn_model=None, tcn_model=None, reference_graph=None):
         self.gnn_model = gnn_model
         self.tcn_model = tcn_model
+        self.reference_graph = reference_graph
 
     async def execute(self, state):
         start = time.time()
@@ -46,17 +47,68 @@ class AnalystAgent:
         return state
 
     async def _run_gnn(self, state):
-        """Run GNN forward pass on merchant transaction graph."""
-        if self.gnn_model:
+        """
+        Run GNN on a dynamic kNN subgraph sampled from the 10,455 merchant
+        reference graph. Gradient attribution on 24 merchant features.
+        """
+        # Production path: reference graph + large GNN model
+        if self.gnn_model and self.reference_graph and self.reference_graph.n_merchants > 0:
             try:
                 import torch
-                result = self.gnn_model.predict(state.merchant_id, state.transaction_data)
-                state.gnn_score = result["risk_score"]
-                state.gnn_confidence = result["confidence"]
-                state.gnn_cluster_probs = result.get("cluster_probs", {})
+                from models.merchant_gnn import RISK_CLASSES, FEATURE_NAMES
+
+                # Build dynamic subgraph (target + 64 kNN neighbors)
+                X_t, A_norm, neighbor_labels = self.reference_graph.build_inference_subgraph(
+                    state.transaction_data or {}, k=64,
+                )
+                if X_t is None:
+                    raise ValueError("Failed to build subgraph")
+
+                n_nodes = X_t.shape[0]
+                state.log("ANALYST", "SUBGRAPH", f"Built {n_nodes}-node kNN subgraph from {self.reference_graph.n_merchants} reference merchants")
+
+                # GNN forward pass with gradient tracking
+                features = X_t.clone().detach().requires_grad_(True)
+                self.gnn_model.eval()
+                self.gnn_model.zero_grad()
+
+                logits = self.gnn_model(features, A_norm)
+                probs = torch.softmax(logits[0], dim=0)  # query node = index 0
+                pred_class = int(probs.argmax().item())
+
+                # Gradient-based feature attribution on query node's 24 features
+                probs[pred_class].backward()
+                feat_grad = features.grad[0].abs()  # (24,) gradients at query node
+                feat_importance = feat_grad / (feat_grad.sum() + 1e-8)
+
+                state.feature_importance = [
+                    {"name": FEATURE_NAMES[i], "value": round(float(feat_importance[i]), 4)}
+                    for i in range(24) if FEATURE_NAMES[i] != "Reserved"
+                ]
+                state.feature_importance.sort(key=lambda x: x["value"], reverse=True)
+                state.feature_importance = state.feature_importance[:8]
+
+                # Risk class probabilities
+                n_classes = len(probs)
+                risk_names = RISK_CLASSES[:n_classes] if n_classes <= len(RISK_CLASSES) else [f"class_{i}" for i in range(n_classes)]
+                state.gnn_cluster_probs = {
+                    name: round(float(probs[i].item()), 4)
+                    for i, name in enumerate(risk_names)
+                }
+
+                # Confidence = weighted average (low_risk=1.0, critical=0.0)
+                risk_weights = [1.0 - i / max(n_classes - 1, 1) for i in range(n_classes)]
+                confidence = sum(float(probs[i]) * risk_weights[i] for i in range(n_classes))
+                state.gnn_confidence = round(min(max(confidence, 0.0), 1.0), 4)
+                state.gnn_score = round(1.0 - state.gnn_confidence, 4)
+
+                state.log("ANALYST", "GNN_DETAIL",
+                          f"Predicted {risk_names[pred_class]} (p={float(probs[pred_class]):.3f}), "
+                          f"confidence={state.gnn_confidence}, "
+                          f"top feature={state.feature_importance[0]['name']}")
                 return
             except Exception as e:
-                state.log("ANALYST", "GNN_FALLBACK", f"GNN model error: {e}, using heuristic")
+                state.log("ANALYST", "GNN_FALLBACK", f"GNN v2 error: {e}, using heuristic")
 
         # Heuristic fallback — simulates GNN output from transaction patterns
         tx_data = state.transaction_data
@@ -74,7 +126,7 @@ class AnalystAgent:
                              min(1.0, avg_ticket / 2000) * 0.15 +
                              min(1.0, customer_diversity / 100) * 0.1 +
                              min(1.0, months_active / 24) * 0.1)
-            confidence = round(0.5 + tx_richness * 0.45 + random.uniform(-0.05, 0.05), 4)
+            confidence = round(0.5 + tx_richness * 0.45, 4)
         else:
             confidence = round(random.uniform(0.55, 0.85), 4)
 
@@ -93,8 +145,29 @@ class AnalystAgent:
         if self.tcn_model:
             try:
                 result = self.tcn_model.predict(state.transaction_data.get("weekly_data", []))
-                state.tcn_stability = result["stability"]
+                raw_stability = result["stability"]
                 state.tcn_trend = result["trend"]
+
+                # Calibrate: TCN trained on synthetic data tends to over-predict
+                # stability. Blend model output with observable financial signals.
+                weekly = state.transaction_data.get("weekly_data", [])
+                if weekly:
+                    savings = [w.get("savings", 0) for w in weekly]
+                    incomes = [w.get("income", 1) for w in weekly]
+                    savings_positive = sum(1 for s in savings if s > 0) / len(savings)
+                    income_cv = np.std(incomes) / (np.mean(incomes) + 1e-6)
+                    avg_savings_rate = np.mean(savings) / (np.mean(incomes) + 1e-6)
+
+                    health = (
+                        (1.0 - min(income_cv, 1.0)) * 0.35 +
+                        savings_positive * 0.35 +
+                        max(min(avg_savings_rate, 0.5), -0.2) * 0.30 / 0.5
+                    )
+                    # Blend: 40% model, 60% observed signals
+                    calibrated = raw_stability * 0.4 + health * 0.6
+                    state.tcn_stability = round(min(max(calibrated, 0.0), 1.0), 4)
+                else:
+                    state.tcn_stability = round(raw_stability, 4)
                 return
             except Exception as e:
                 state.log("ANALYST", "TCN_FALLBACK", f"TCN model error: {e}, using heuristic")
@@ -140,7 +213,7 @@ class VerifierAgent:
     Responsibilities:
       1. Detect circular transactions and self-dealing
       2. Flag sudden transaction spikes (velocity check)
-      3. Verify market prices for agricultural inputs
+      3. Verify market prices for requested items
       4. Check merchant legitimacy signals
     """
 
@@ -253,6 +326,67 @@ class VerifierAgent:
             })
             fraud_score += 0.30
 
+        # Check 6: Mule account pattern (UPI-specific)
+        # High P2P in+out with low business income suggests money mule behavior
+        if (p2p_in > 20000 and p2p_out > 20000 and monthly_income < 10000):
+            flags.append({
+                "type": "mule_account_pattern",
+                "severity": "critical",
+                "detail": (
+                    f"High P2P volume (in: ₹{p2p_in}, out: ₹{p2p_out}) "
+                    f"inconsistent with business income (₹{monthly_income})"
+                ),
+                "score_impact": 0.25,
+            })
+            fraud_score += 0.25
+
+        # Check 7: Cash-out risk via P2P
+        # If loan amount is significant and merchant has high P2P outflow
+        # relative to income, funds may be cashed out via P2P transfers
+        if (state.loan_amount > 0 and monthly_income > 0
+                and p2p_out > monthly_income * 0.5):
+            flags.append({
+                "type": "cash_out_risk",
+                "severity": "warning",
+                "detail": (
+                    f"Potential loan cash-out via P2P — outflow ₹{p2p_out} "
+                    f"is >{int(p2p_out / monthly_income * 100)}% of monthly income"
+                ),
+                "score_impact": 0.10,
+            })
+            fraud_score += 0.10
+
+        # Check 8: Settlement anomaly
+        # Low settlement velocity relative to income signals abnormal flow
+        settlement_amount = tx_data.get("settlement_amount", 0)
+        if (settlement_amount > 0 and monthly_income > 0
+                and settlement_amount < monthly_income * 1.5):
+            flags.append({
+                "type": "settlement_anomaly",
+                "severity": "info",
+                "detail": (
+                    f"Low settlement velocity — settlement ₹{settlement_amount} "
+                    f"vs expected ≥₹{round(monthly_income * 1.5)} (1.5× monthly income)"
+                ),
+                "score_impact": 0.05,
+            })
+            fraud_score += 0.05
+
+        # Check 9: Collect request abuse (NPCI flagged pattern)
+        # Excessive UPI collect requests are a known fraud vector
+        collect_request_count = tx_data.get("collect_request_count", 0)
+        if collect_request_count > 50:
+            flags.append({
+                "type": "collect_request_abuse",
+                "severity": "warning",
+                "detail": (
+                    f"High collect request volume ({collect_request_count}) — "
+                    "NPCI flagged pattern for potential payment fraud"
+                ),
+                "score_impact": 0.08,
+            })
+            fraud_score += 0.08
+
         state.fraud_flags = flags
         state.fraud_score = round(min(fraud_score, 1.0), 4)
 
@@ -354,7 +488,7 @@ class DisburserAgent:
         state.log(
             "DISBURSER",
             "RECOVERY_SCHEDULED",
-            f"Auto-deduction linked to farmer {state.farmer_id} harvest cycle",
+            f"Auto-deduction linked to borrower {state.borrower_id} repayment cycle",
         )
 
         return state
