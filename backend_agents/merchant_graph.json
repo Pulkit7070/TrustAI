@@ -1,0 +1,287 @@
+{
+  "nodes": [
+    {
+      "id": "merchant",
+      "label": "MERCHANT_CORE",
+      "cluster": "merchant"
+    },
+    {
+      "id": "upi_p2m",
+      "label": "UPI_PAY_TO_MERCHANT",
+      "cluster": "revenue"
+    },
+    {
+      "id": "qr_dynamic",
+      "label": "QR_DYNAMIC_CODE",
+      "cluster": "revenue"
+    },
+    {
+      "id": "qr_static",
+      "label": "QR_STATIC_CODE",
+      "cluster": "revenue"
+    },
+    {
+      "id": "soundbox",
+      "label": "SOUNDBOX_DEVICE",
+      "cluster": "revenue"
+    },
+    {
+      "id": "pos_device",
+      "label": "POS_TERMINAL",
+      "cluster": "revenue"
+    },
+    {
+      "id": "online_pg",
+      "label": "ONLINE_PAYMENT_GATEWAY",
+      "cluster": "revenue"
+    },
+    {
+      "id": "cust_regular",
+      "label": "REGULAR_CUSTOMERS",
+      "cluster": "customers"
+    },
+    {
+      "id": "cust_new",
+      "label": "NEW_CUSTOMERS",
+      "cluster": "customers"
+    },
+    {
+      "id": "cust_high_value",
+      "label": "HIGH_VALUE_CUSTOMERS",
+      "cluster": "customers"
+    },
+    {
+      "id": "cust_seasonal",
+      "label": "SEASONAL_CUSTOMERS",
+      "cluster": "customers"
+    },
+    {
+      "id": "settlement",
+      "label": "BANK_SETTLEMENT",
+      "cluster": "financial"
+    },
+    {
+      "id": "refunds",
+      "label": "REFUND_OUTFLOW",
+      "cluster": "financial"
+    },
+    {
+      "id": "chargeback",
+      "label": "CHARGEBACK_DISPUTES",
+      "cluster": "financial"
+    },
+    {
+      "id": "cashflow",
+      "label": "NET_CASHFLOW",
+      "cluster": "financial"
+    },
+    {
+      "id": "postpaid_usage",
+      "label": "POSTPAID_BNPL",
+      "cluster": "credit"
+    },
+    {
+      "id": "loan_history",
+      "label": "LOAN_REPAYMENT_HISTORY",
+      "cluster": "credit"
+    },
+    {
+      "id": "credit_line",
+      "label": "CREDIT_LINE_UTILIZATION",
+      "cluster": "credit"
+    },
+    {
+      "id": "inventory",
+      "label": "INVENTORY_TURNOVER",
+      "cluster": "business"
+    },
+    {
+      "id": "suppliers",
+      "label": "SUPPLIER_PAYMENTS",
+      "cluster": "business"
+    },
+    {
+      "id": "operating_costs",
+      "label": "OPERATING_EXPENSES",
+      "cluster": "business"
+    }
+  ],
+  "edges": [
+    {
+      "source": "merchant",
+      "target": "upi_p2m"
+    },
+    {
+      "source": "merchant",
+      "target": "qr_dynamic"
+    },
+    {
+      "source": "merchant",
+      "target": "qr_static"
+    },
+    {
+      "source": "merchant",
+      "target": "soundbox"
+    },
+    {
+      "source": "merchant",
+      "target": "pos_device"
+    },
+    {
+      "source": "merchant",
+      "target": "online_pg"
+    },
+    {
+      "source": "merchant",
+      "target": "cust_regular"
+    },
+    {
+      "source": "merchant",
+      "target": "cust_new"
+    },
+    {
+      "source": "merchant",
+      "target": "cust_high_value"
+    },
+    {
+      "source": "merchant",
+      "target": "cust_seasonal"
+    },
+    {
+      "source": "merchant",
+      "target": "settlement"
+    },
+    {
+      "source": "merchant",
+      "target": "refunds"
+    },
+    {
+      "source": "merchant",
+      "target": "chargeback"
+    },
+    {
+      "source": "merchant",
+      "target": "cashflow"
+    },
+    {
+      "source": "merchant",
+      "target": "postpaid_usage"
+    },
+    {
+      "source": "merchant",
+      "target": "loan_history"
+    },
+    {
+      "source": "merchant",
+      "target": "credit_line"
+    },
+    {
+      "source": "merchant",
+      "target": "inventory"
+    },
+    {
+      "source": "merchant",
+      "target": "suppliers"
+    },
+    {
+      "source": "merchant",
+      "target": "operating_costs"
+    },
+    {
+      "source": "upi_p2m",
+      "target": "qr_dynamic"
+    },
+    {
+      "source": "qr_dynamic",
+      "target": "qr_static"
+    },
+    {
+      "source": "qr_static",
+      "target": "soundbox"
+    },
+    {
+      "source": "soundbox",
+      "target": "pos_device"
+    },
+    {
+      "source": "pos_device",
+      "target": "online_pg"
+    },
+    {
+      "source": "cust_regular",
+      "target": "upi_p2m"
+    },
+    {
+      "source": "cust_regular",
+      "target": "qr_static"
+    },
+    {
+      "source": "cust_new",
+      "target": "qr_dynamic"
+    },
+    {
+      "source": "cust_high_value",
+      "target": "pos_device"
+    },
+    {
+      "source": "cust_seasonal",
+      "target": "online_pg"
+    },
+    {
+      "source": "upi_p2m",
+      "target": "settlement"
+    },
+    {
+      "source": "qr_dynamic",
+      "target": "settlement"
+    },
+    {
+      "source": "soundbox",
+      "target": "settlement"
+    },
+    {
+      "source": "online_pg",
+      "target": "refunds"
+    },
+    {
+      "source": "pos_device",
+      "target": "chargeback"
+    },
+    {
+      "source": "settlement",
+      "target": "cashflow"
+    },
+    {
+      "source": "cashflow",
+      "target": "credit_line"
+    },
+    {
+      "source": "loan_history",
+      "target": "credit_line"
+    },
+    {
+      "source": "postpaid_usage",
+      "target": "loan_history"
+    },
+    {
+      "source": "inventory",
+      "target": "suppliers"
+    },
+    {
+      "source": "suppliers",
+      "target": "cashflow"
+    },
+    {
+      "source": "operating_costs",
+      "target": "cashflow"
+    }
+  ],
+  "clusters": [
+    "business",
+    "credit",
+    "customers",
+    "financial",
+    "merchant",
+    "revenue"
+  ]
+}
