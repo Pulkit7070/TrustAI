@@ -1,7 +1,7 @@
 """
 Temporal Convolutional Network for Financial Stability Scoring
 
-Analyzes 12-week merchant/farmer financial time-series to predict
+Analyzes 12-week merchant/borrower financial time-series to predict
 behavioral stability and repayment reliability.
 
 Architecture:
@@ -76,10 +76,12 @@ class TCNStabilityModel(nn.Module):
             layers.append(TCNBlock(channels, out_ch, kernel_size, dilation))
             channels = out_ch
         self.tcn = nn.Sequential(*layers)
+        fc_hidden = hidden // 2 if hidden >= 64 else 16
         self.fc = nn.Sequential(
-            nn.Linear(hidden, 16),
+            nn.Linear(hidden, fc_hidden),
             nn.ReLU(),
-            nn.Linear(16, 1),
+            nn.Dropout(0.15),
+            nn.Linear(fc_hidden, 1),
             nn.Sigmoid(),
         )
 
