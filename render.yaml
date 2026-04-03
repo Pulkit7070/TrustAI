@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: trustai-api
+    runtime: docker
+    dockerfilePath: backend_agents/Dockerfile
+    dockerContext: backend_agents
+    plan: free
+    envVars:
+      - key: PORT
+        value: 8000
