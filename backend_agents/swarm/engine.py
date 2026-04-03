@@ -19,6 +19,15 @@ from typing import Any, Optional
 
 import numpy as np
 
+try:
+    from feedback_loop import get_tracker
+except ImportError:
+    # Fallback to avoid breaking standalone runs during dev
+    def get_tracker():
+        class DummyTracker:
+            def record_decision(self, *args, **kwargs): return "dummy_id"
+        return DummyTracker()
+
 
 class AgentRole(str, Enum):
     PLANNER = "planner"
@@ -72,6 +81,7 @@ class SwarmState:
     gnn_score: Optional[float] = None
     gnn_confidence: Optional[float] = None
     gnn_cluster_probs: Optional[dict] = None
+    gnn_neighbor_risk: Optional[float] = None
     tcn_stability: Optional[float] = None
     tcn_trend: Optional[str] = None
     fraud_flags: list = field(default_factory=list)
@@ -81,6 +91,10 @@ class SwarmState:
     payment_status: Optional[str] = None
     payment_txn_id: Optional[str] = None
     mcp_response: Optional[dict] = None
+
+    # Internal state
+    _enhanced_fraud: bool = False
+    _decision_id: Optional[str] = None
 
     # Explainability (SHAP-like feature attribution)
     feature_importance: list = field(default_factory=list)
@@ -228,10 +242,26 @@ class SwarmEngine:
             state.total_latency_ms = total_ms
             state.log("SWARM", "COMPLETE", f"Swarm completed in {total_ms:.0f}ms", latency_ms=total_ms)
 
+            # Record feedback
+            tracker = get_tracker()
+            decision_id = tracker.record_decision(
+                merchant_id=state.merchant_id or state.request_id,
+                loan_amount=state.loan_amount,
+                decision=state.decision or "rejected",
+                composite_risk=state.composite_risk or 1.0,
+                gnn_confidence=state.gnn_confidence or 0.0,
+                tcn_stability=state.tcn_stability or 0.0,
+                fraud_score=state.fraud_score or 0.0,
+            )
+            state._decision_id = decision_id
+
+            out_state = state.to_dict()
+            out_state["decision_id"] = decision_id
+
             return SwarmResult(
                 success=True,
                 decision=state.decision or "pending",
-                state=state.to_dict(),
+                state=out_state,
                 logs=[l.to_dict() for l in state.logs],
                 total_latency_ms=total_ms,
             )
@@ -248,15 +278,36 @@ class SwarmEngine:
             )
 
     def _create_plan(self, state: SwarmState) -> list:
-        """Planner decomposes request into execution steps."""
-        steps = [
-            {"step": 1, "agent": "analyst", "task": "Run GNN credit mesh analysis on merchant transaction graph"},
-            {"step": 2, "agent": "analyst", "task": "Run TCN temporal stability scoring on 12-week financial data"},
-            {"step": 3, "agent": "verifier", "task": "Detect fraud patterns and circular transactions"},
-            {"step": 4, "agent": "verifier", "task": "Verify market prices for requested items"},
-            {"step": 5, "agent": "validator", "task": "Cross-validate GNN/TCN scores and compute composite risk"},
-            {"step": 6, "agent": "disburser", "task": "Execute payment via Paytm MCP if approved"},
-        ]
+        """Dynamic planner — adapts execution based on input signals."""
+        steps = []
+        
+        # Always run analyst first (GNN + TCN)
+        steps.append({"step": 1, "agent": "analyst", "task": "GNN + TCN analysis"})
+        
+        # Dynamic decision: should we run enhanced fraud checks?
+        tx = state.transaction_data
+        if tx:
+            p2p_ratio = (tx.get("p2p_received_monthly", 0) + tx.get("p2p_sent_monthly", 0)) / max(tx.get("monthly_income", 1), 1)
+            velocity = tx.get("current_month_count", 0) / max(tx.get("avg_monthly_count", 1), 1)
+            kyc = tx.get("merchant_kyc_verified", True)
+            
+            if p2p_ratio > 2.0 or velocity > 3.0 or not kyc:
+                # High-risk signals → run enhanced fraud pipeline
+                steps.append({"step": 2, "agent": "verifier", "task": "ENHANCED fraud detection (triggered by risk signals)", "enhanced": True})
+                state._enhanced_fraud = True
+            else:
+                steps.append({"step": 2, "agent": "verifier", "task": "Standard verification"})
+                state._enhanced_fraud = False
+        else:
+            steps.append({"step": 2, "agent": "verifier", "task": "Standard verification"})
+            state._enhanced_fraud = False
+        
+        # Validation always runs
+        steps.append({"step": 3, "agent": "validator", "task": "Cross-validate and decide"})
+        
+        # Disbursement only if approved
+        steps.append({"step": 4, "agent": "disburser", "task": "Execute payment if approved"})
+        
         return steps
 
     def _validate(self, state: SwarmState) -> SwarmState:
@@ -305,6 +356,20 @@ class SwarmEngine:
         else:
             state.decision = "rejected"
             state.decision_reason = f"High risk ({composite:.2f}). Insufficient trust signals across GNN and TCN models."
+
+        # Re-evaluation loop (Dynamic Swarm Reasoning)
+        if state.decision == "rejected" and (state.gnn_confidence or 0.0) > 0.8:
+            state.log(
+                "VALIDATOR",
+                "RECHECK",
+                "Decision was 'rejected', but GNN expressed high confidence. Re-evaluating composite risk."
+            )
+            # Perform a double check: if fraud risk is low, overrule TCN
+            if fraud_risk < 0.15:
+                state.decision = "structured"
+                state.decision_reason = f"High GNN confidence (>0.8) and low fraud risk (<0.15) overrules rejection. Structured financing approved."
+                state.composite_risk -= 0.10
+                composite -= 0.10
 
         state.log(
             "VALIDATOR",

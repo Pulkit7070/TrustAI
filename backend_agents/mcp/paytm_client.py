@@ -59,6 +59,9 @@ class PaytmMCPClient:
         self.base_url = base_url
         self.demo_mode = demo_mode
         self._call_log: list[MCPToolResult] = []
+        
+        if self.demo_mode:
+            print("[INFO] PaytmMCPClient starting in SIMULATED DEMO MODE. Calls will not hit production.")
 
     async def initiate_transaction(
         self,
@@ -217,6 +220,7 @@ class PaytmMCPClient:
             "mcp_call_id": tool_call.call_id,
             "gateway_response": data,
             "timestamp": time.time(),
+            "note": "MCP Demo Mode: Synthetic Link Generated",
         }
 
     async def _simulate_status(self, tool_call: MCPToolCall, order_id: str) -> dict:
@@ -225,6 +229,7 @@ class PaytmMCPClient:
             "order_id": order_id,
             "result_code": "01",
             "result_msg": "Transaction fetched successfully",
+            "note": "MCP Demo Mode: Simulated Status",
         }
         result = MCPToolResult(
             call_id=tool_call.call_id,

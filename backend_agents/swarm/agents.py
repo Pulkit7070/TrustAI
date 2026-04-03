@@ -102,6 +102,13 @@ class AnalystAgent:
                 state.gnn_confidence = round(min(max(confidence, 0.0), 1.0), 4)
                 state.gnn_score = round(1.0 - state.gnn_confidence, 4)
 
+                # Compute neighbor risk (Graph-based signal for Fraud check)
+                if len(neighbor_labels) > 0:
+                    avg_neighbor_label = float(sum(neighbor_labels)) / len(neighbor_labels)
+                    state.gnn_neighbor_risk = round(avg_neighbor_label / max(n_classes - 1, 1), 4)
+                else:
+                    state.gnn_neighbor_risk = 0.5
+
                 state.log("ANALYST", "GNN_DETAIL",
                           f"Predicted {risk_names[pred_class]} (p={float(probs[pred_class]):.3f}), "
                           f"confidence={state.gnn_confidence}, "
@@ -263,6 +270,32 @@ class VerifierAgent:
             state.fraud_flags = []
             return
 
+        monthly_income = tx_data.get("monthly_income", 15000)
+
+        # ---------------------------------------------------------
+        # Check 0: GNN Graph-Based Fraud Signals (Integration Fix)
+        # ---------------------------------------------------------
+        if getattr(state, "gnn_neighbor_risk", None) is not None:
+            # 0a: Neighborhood Risk
+            if state.gnn_neighbor_risk > 0.6:
+                flags.append({
+                    "type": "neighborhood_risk",
+                    "severity": "warning",
+                    "detail": f"Merchant is clustered with high-risk peers (neighbor risk: {state.gnn_neighbor_risk:.2f})",
+                    "score_impact": 0.15,
+                })
+                fraud_score += 0.15
+            
+            # 0b: Graph Risk Mismatch (Spoofing)
+            if state.gnn_neighbor_risk > 0.7 and monthly_income > 80000:
+                flags.append({
+                    "type": "graph_risk_mismatch",
+                    "severity": "critical",
+                    "detail": "High reported income but clustered with critical-risk/defaulting merchants. Potential spoofing.",
+                    "score_impact": 0.25,
+                })
+                fraud_score += 0.25
+
         # Check 1: Circular transaction detection
         p2p_in = tx_data.get("p2p_received_monthly", 0)
         p2p_out = tx_data.get("p2p_sent_monthly", 0)
@@ -303,7 +336,6 @@ class VerifierAgent:
             fraud_score += 0.08
 
         # Check 4: Loan amount vs income ratio
-        monthly_income = tx_data.get("monthly_income", 15000)
         if state.loan_amount > 0 and monthly_income > 0:
             loan_income_ratio = state.loan_amount / monthly_income
             if loan_income_ratio > 3.0:
@@ -386,6 +418,43 @@ class VerifierAgent:
                 "score_impact": 0.08,
             })
             fraud_score += 0.08
+
+        # ---------------------------------------------------------
+        # Dynamic Swarm Intelligence: ENHANCED FRAUD MODE check
+        # ---------------------------------------------------------
+        if getattr(state, "_enhanced_fraud", False):
+            # If the planner triggered enhanced mode, we apply stricter criteria
+            p2p_in = tx_data.get("p2p_received_monthly", 0)
+            p2p_out = tx_data.get("p2p_sent_monthly", 0)
+            circular_ratio = min(p2p_in, p2p_out) / max(p2p_in, p2p_out) if (p2p_in > 0 and p2p_out > 0) else 0
+
+            if circular_ratio > 0.5: # Lowered threshold from 0.8
+                fraud_score += 0.10
+                flags.append({
+                    "type": "enhanced_circular_check",
+                    "severity": "warning",
+                    "detail": "Enhanced checks triggered: moderate circular activity flagged.",
+                    "score_impact": 0.10,
+                })
+            
+            if (p2p_in > 10000 and p2p_out > 10000 and monthly_income < 20000):
+                fraud_score += 0.20
+                flags.append({
+                    "type": "enhanced_mule_check",
+                    "severity": "critical",
+                    "detail": "Enhanced checks triggered: strict mule behavior rules applied.",
+                    "score_impact": 0.20,
+                })
+
+            # Check if analyst fundamentally disagrees
+            if (state.gnn_confidence or 0.5) < 0.4:
+                fraud_score += 0.15
+                flags.append({
+                    "type": "analyst_disagrees",
+                    "severity": "warning",
+                    "detail": "Enhanced checks: GNN confidence very low, adding uncertainty penalty.",
+                    "score_impact": 0.15,
+                })
 
         state.fraud_flags = flags
         state.fraud_score = round(min(fraud_score, 1.0), 4)

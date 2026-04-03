@@ -915,10 +915,9 @@ async def swarm_analytics():
     from pathlib import Path
     data_dir = Path(__file__).parent / "data"
     dataset_records = 0
-    for f in ["german_credit.data", "credit_scoring.csv", "ibm_credit.csv"]:
-        p = data_dir / f
-        if p.exists():
-            dataset_records += sum(1 for _ in open(str(p), errors="ignore")) - 1
+    p = data_dir / "merchant_profiles.csv"
+    if p.exists():
+        dataset_records += sum(1 for _ in open(str(p), errors="ignore")) - 1
 
     return {
         "live_runs": {
@@ -932,7 +931,7 @@ async def swarm_analytics():
         },
         "dataset": {
             "total_records": dataset_records or 10455,
-            "sources": ["UCI German Credit (1K)", "CreditScoring (4.5K)", "IBM Watson (5K)"],
+            "sources": ["merchant_profiles.csv (Single unified distribution calibrated to Indian MSME data)"],
             "model_type": "5-layer GCN (128 hidden) + 4-block TCN (64 hidden)",
             "gnn_status": "loaded" if _gnn_model else "heuristic",
             "tcn_status": "loaded" if _tcn_model else "heuristic",
@@ -984,6 +983,58 @@ async def swarm_mcp_tools():
             },
         ],
     }
+
+@app.get("/mcp/spec")
+async def mcp_spec():
+    """Return the formal Model Context Protocol specification for integration."""
+    return {
+        "mcp_version": "2024-11-05",
+        "server_type": "paytm_transactions",
+        "capabilities": {
+            "resources": True,
+            "prompts": False,
+            "tools": True
+        },
+        "supported_tools": [
+            "create_payment_link",
+            "fetch_transactions_for_link",
+            "get_settlement_summary",
+            "initiate_refund",
+            "fetch_order_list",
+            "get_settlement_detail"
+        ],
+        "authentication": "Bearer token required in production",
+        "current_mode": "demo_simulation"
+    }
+
+@app.get("/swarm/evaluation")
+async def swarm_evaluation():
+    """Return the latest model evaluation metrics (ground truth validation)."""
+    from pathlib import Path
+    eval_path = Path(__file__).parent / "evaluation_results.json"
+    if eval_path.exists():
+        import json
+        with open(str(eval_path), "r") as f:
+            return json.load(f)
+    return {"status": "error", "message": "Evaluation results not found. Run evaluate.py first."}
+
+@app.get("/feedback/summary")
+async def feedback_summary():
+    """Returns feedback loop summary metrics (outcomes, defaults)."""
+    try:
+        from feedback_loop import get_tracker
+        return get_tracker().get_summary()
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/feedback/drift")
+async def feedback_drift():
+    """Returns model drift report based on outcome distribution."""
+    try:
+        from feedback_loop import get_tracker
+        return get_tracker().get_drift_report()
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 if __name__ == "__main__":
